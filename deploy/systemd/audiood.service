@@ -1,0 +1,20 @@
+[Unit]
+Description=audiood - doorbell talk / auto reply (Coze)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/smart-door-lock
+EnvironmentFile=-/etc/doorlock/audiood.env
+ExecStart=/home/pi/smart-door-lock/.venv/bin/python -m device.audiood.app
+Restart=always
+RestartSec=3
+
+SupplementaryGroups=audio
+CPUQuota=200%
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

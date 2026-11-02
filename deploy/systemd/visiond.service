@@ -1,0 +1,24 @@
+[Unit]
+Description=visiond - door lock vision (record / intrusion / package)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/smart-door-lock
+EnvironmentFile=-/etc/doorlock/visiond.env
+ExecStart=/home/pi/smart-door-lock/.venv/bin/python -m device.visiond.app
+Restart=always
+RestartSec=3
+
+# 摄像头与 NPU 需要的基本权限
+SupplementaryGroups=video render
+# 门锁本来就该限制资源：吃满 CPU 会让对讲卡顿
+CPUQuota=300%
+MemoryMax=1G
+# 录制目录
+ReadWritePaths=/home/pi/smart-door-lock/data
+
+[Install]
+WantedBy=multi-user.target

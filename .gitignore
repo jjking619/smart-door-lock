@@ -1,0 +1,9 @@
+# 别把密钥、录像、模型提交上去
+.venv/
+__pycache__/
+*.pyc
+data/
+models/*.rknn
+models/*.onnx
+*.env
+!*.env.example
