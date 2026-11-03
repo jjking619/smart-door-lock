@@ -114,6 +114,34 @@ class CozeUnavailable(RuntimeError):
     """云端不可用：调用方应当降级到本地应答。"""
 
 
+class CozeConfigError(CozeUnavailable):
+    """配置错误（不是网络问题）：重试无意义，应直接暴露给人看。"""
+
+
+def validate_workflow_id(workflow_id: str) -> str:
+    """Coze 工作流 ID 是纯数字（19 位），不是工作流名称。
+
+    这是最常见的配置错误：把 console 里显示的名字 "smart_door_lock"
+    填进来，API 会返回 code 4000 "workflow_id is invalid"，然后白白重试两次。
+    在这里提前拦截，报错才有指向性。
+    """
+    wid = (workflow_id or "").strip()
+    if not wid:
+        raise CozeConfigError("COZE_WORKFLOW_ID 为空")
+    if not wid.isdigit():
+        raise CozeConfigError(
+            f"COZE_WORKFLOW_ID 必须是纯数字 ID，收到的是名称 {wid!r}。\n"
+            "在 coze.cn 打开工作流，地址栏形如\n"
+            "  https://www.coze.cn/work_flow?space_id=...&workflow_id=7466xxxxxxxxxxxxxxxx\n"
+            "复制 workflow_id 那串数字（19 位），或运行\n"
+            "  python -m device.audiood.coze_smoke_test --list\n"
+            "自动列出你账号下的工作流与编号。"
+        )
+    if len(wid) < 10:
+        raise CozeConfigError(f"COZE_WORKFLOW_ID 长度异常（{len(wid)} 位），看起来不像有效 ID")
+    return wid
+
+
 class CozeWorkflowClient:
     """对 cozepy 的薄封装，补齐超时、熔断与会话裁剪。"""
 
@@ -126,9 +154,10 @@ class CozeWorkflowClient:
     ) -> None:
         if not token or not workflow_id:
             raise CozeUnavailable("COZE_API_TOKEN / COZE_WORKFLOW_ID 未配置")
+        # 提前校验，别让 4000 参数错误走到重试逻辑
+        self._workflow_id = validate_workflow_id(workflow_id)
         # 延迟导入：没有 cozepy 时也不影响其他服务启动
         self._coze = build_async_client(token, base_url)
-        self._workflow_id = workflow_id
         self._timeout = timeout_s
         self._history: list[dict[str, str]] = []
         self._fail_streak = 0
@@ -192,8 +221,16 @@ class CozeWorkflowClient:
             except Exception as exc:  # noqa: BLE001 - 网络/鉴权/协议全部降级
                 last_err = exc
                 logger.warning("coze failed (attempt %d): %s", attempt, exc)
-                if "auth" in str(exc).lower() or "401" in str(exc):
-                    break  # 鉴权错误重试没意义
+                msg = str(exc).lower()
+                # 这些错误重试没有意义，直接降级，别白等两轮超时
+                if (
+                    "auth" in msg
+                    or "401" in msg
+                    or "4000" in msg        # 参数/配置错误
+                    or "4200" in msg        # 工作流未发布
+                    or "invalid" in msg
+                ):
+                    break
 
         self._record(False)
         raise CozeUnavailable(str(last_err))
@@ -256,7 +293,7 @@ def build_async_client(token: str = COZE_API_TOKEN, base_url: str = COZE_BASE_UR
     整个进程共用一个实例，避免每次门铃都重新握手（省 100–300 ms）。
     """
     if not token:
-        raise CozeUnavailable("COZE_API_TOKEN 未配置")
+        raise CozeConfigError("COZE_API_TOKEN 未配置")
     from cozepy import AsyncCoze, AsyncTokenAuth  # noqa: PLC0415
 
     return AsyncCoze(auth=AsyncTokenAuth(token), base_url=base_url)

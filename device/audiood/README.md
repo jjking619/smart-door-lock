@@ -48,15 +48,14 @@ Coze(6s, 重试1次) → 熔断60s → 本地小模型(2s) → 固定话术 → 
 
 ```bash
 cd /home/pi/smart-door-lock
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r device/audiood/requirements.txt
 
-export COZE_API_TOKEN=pat_xxx        # 去 coze.cn 重新生成，别用示例里的
-export COZE_WORKFLOW_ID=7466xxxxxxxxxxxxx
-export COZE_VOICE_ID=                # 留空则自动取第一个中文音色
-python -m device.audiood.coze_smoke_test "我是送快递的，东西放门口了"
+# 0) 先验证 Coze 配置（强烈建议，能省掉猜错误码的时间）
+set -a; . ./deploy/systemd/audiood.env; set +a
+.venv/bin/python -m device.audiood.coze_smoke_test --list
+#   ↑ 没有工作流会显示 "工作流: 0 个"，先去 coze.cn 建一个并「发布」
+#   ↑ 有工作流时会把 id 打出来，填进 COZE_WORKFLOW_ID
 
-python -m device.audiood.app          # 回车模拟门铃
+.venv/bin/python -m device.audiood.coze_smoke_test "东西放门口了"
 ```
 
 ## Coze 工作流提示词（必须锁死输出格式）
@@ -102,3 +101,12 @@ python -m device.audiood.app          # 回车模拟门铃
 | `AUDIO_INPUT_DEVICE` / `AUDIO_OUTPUT_DEVICE` | 系统默认 | `sounddevice` 设备号（`python -m sounddevice` 查） |
 | `AUDIO_SILENCE_RMS` | 300 | VAD 阈值，噪音大就调高 |
 | `AUDIO_MAX_UTTER_S` | 8 | 单句最长录音 |
+
+## 常见配置错误
+
+| 报错 | 原因 | 修法 |
+| --- | --- | --- |
+| `COZE_WORKFLOW_ID 必须是纯数字 ID，收到的是名称` | 把工作流**名字**当 ID 填了 | 跑 `--list`，或用 console 地址栏的 `workflow_id` 参数 |
+| `code 4000 workflow_id is invalid` | ID 不存在 | 同上 |
+| `code 4200` | 工作流存在但**未发布** | console 里点「发布」 |
+| `code 4100 access_token required` | token 缺失/过期 | 重新生成 PAT |
