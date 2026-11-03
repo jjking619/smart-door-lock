@@ -70,7 +70,7 @@ def create_app(svc: VisionService) -> web.Application:
         )
         await resp.prepare(_req)
         try:
-            for chunk in svc.mjpeg_frames():
+            async for chunk in svc.mjpeg_frames():
                 await resp.write(chunk)
         except (ConnectionResetError, asyncio.CancelledError):
             pass

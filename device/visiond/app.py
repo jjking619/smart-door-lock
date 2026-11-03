@@ -245,9 +245,14 @@ class VisionService:
         self.bus.emit(payload)
 
     # ---- MJPEG 预览 ----
-    def mjpeg_frames(self):
-        """生成器：给 aiohttp 的 MJPEG 响应使用。"""
+    async def mjpeg_frames(self):
+        """异步生成器：给 aiohttp 的 MJPEG 响应使用。
+
+        必须是异步的：同步生成器里的 time.sleep(50ms) 会阻塞整个事件循环，
+        导致一个预览客户端就把 /health、/events 全部拖慢。
+        """
         self.preview_clients += 1
+        interval = 1.0 / max(1.0, self.cfg.fps * 2)
         try:
             while not self._stop.is_set():
                 data = self.preview_jpeg
@@ -257,7 +262,7 @@ class VisionService:
                         b"Content-Length: " + str(len(data)).encode() + b"\r\n\r\n"
                         + data + b"\r\n"
                     )
-                time.sleep(1.0 / (self.cfg.fps * 2))
+                await asyncio.sleep(interval)
         finally:
             self.preview_clients -= 1
 
