@@ -32,8 +32,13 @@
 
 | 进程 | 入口 | 线程模型 | 崩溃影响 |
 | --- | --- | --- | --- |
-| `visiond` | `python -m device.visiond.app` | 1 采集线程 + asyncio HTTP + N 录像线程 | 无预览、无录像；对讲与他业务不受影响 |
-| `audiood` | `python -m device.audiood.app` | 1 录音线程（executor）+ asyncio | 无自动应答；录像不受影响 |
+| `visiond` | `python -m vision.app` | 1 采集线程 + asyncio HTTP + N 录像线程 | 无预览、无录像；对讲与他业务不受影响 |
+| `audiood` | `python -m audio.app` | 1 录音线程（executor）+ asyncio | 无自动应答；录像不受影响 |
+| `fingerprintd` | `python -m fingerprint.service` | 1 串口轮询线程 + asyncio HTTP | 无指纹识别/录入；开锁只能走界面按钮 |
+| `lockd` | `python -m lock.service` | asyncio HTTP + 每线程一次开锁 | 无法开锁；识别照常记录，界面提示未接入 |
+
+`device.*` 是仓库内的旧命令兼容路径；新代码和文档统一使用 `vision.*`、`audio.*`、`ui.*`。
+打包入口以 `pyproject.toml` 的 `doorlock` 命令为准。
 
 ---
 
@@ -47,8 +52,8 @@
                         │      ▼                                              │
                         │ cap.read() ──失败5次──► release + 重开（热插拔）      │
                         │      │                                              │
-                        │      ├─► 每 3 帧 ──► Detector.detect() ──► Rules.update()
-                        │      │                 (RKNN / ONNX)          │
+                        │      ├─► 每 3 帧 ──► 人员模型 + 包裹模型 ──► Rules.update()
+                        │      │                 (顺序推理，结果合并)    │
                         │      │                                        │ RuleEvent
                         │      ├─► resize 640w ──► JPEG ──► RingBuffer  │
                         │      │                          (10 s)        │
@@ -74,7 +79,7 @@
 | 设计 | 代码位置 | 为什么 |
 | --- | --- | --- |
 | 采集在**单线程**里跑 | `app.py: VisionService._loop` | 相机句柄跨线程会抢帧、读到旧帧 |
-| 推理每 N 帧一次 | `config.infer_every_n=3` | 10 fps 采集、3.3 fps 推理足够，省 NPU |
+| 推理每 N 帧一次 | `config.infer_every_n=3` | 两个模型顺序推理同一帧；实际采集帧率取决于推理耗时 |
 | 环形缓冲只存 **640 宽 JPEG** | `ring.py: RingBuffer` | 原始帧 10 s 要 276 MB，JPEG 约 3 MB |
 | pre-roll 用**单调时钟**索引 | `app.py: _handle_event` | 环形缓冲只认 `monotonic`，墙上时钟会因 NTP 跳变丢帧 |
 | 事件时间戳用**墙上时钟** | `rules.py: wall = time.time()` | 已修 bug：早期版本落库变成 1970 年 |
@@ -107,9 +112,7 @@ _person_first_seen   人形首次进入 doorstep ROI 的单调时刻
 _person_last_seen    最后一次在 ROI 内
 _person_box          用于快照框
 _visit_reported      本次到访是否已告警（防重复）
-_tracks[]            极简最近邻跟踪（同类别 + 中心距阈值）
-_last_emit{}         按事件类型去重时间
-_package_reported{}  已上报包裹的位置网格（24 px）
+_tracks[]            地面包裹的最近邻跟踪、稳定时间和上报状态
 ```
 
 **入侵判定**
@@ -121,18 +124,17 @@ person 类 且 框底边中点 ∈ doorstep_poly
 人形离开 ROI 超过 person_leave_grace_s → 复位
 ```
 
-**快递判定**（四个条件缺一不可）
+**快递判定**
 
 ```
-① 曾有人形进入 ROI（_person_last_seen 有值）
-② 人形离开 ≥ 20 s
-③ ground_poly 内出现 package_class 物体（suitcase/backpack/handbag/box/package/bag）
-   且同一 track 稳定 ≥ static_seconds
-④ 该网格位置 5 min 内未上报，且全局 package 去重未触发
-   → package.detected
+ground_poly 内检测到 package_class 物体
+    └─ 连续识别且位置稳定 ≥ static_seconds
+         └─ 同一 track 尚未上报 → package.detected
+已上报 track 消失 ≥ dedupe_seconds → 允许重新上报
 ```
 
-单帧看到"地上有箱子"不构成事件，这是刻意的：鞋柜、地垫、雨伞都长这样。
+无需人员进出；启动时已有的包裹也会上报，重启后跟踪状态不保留。
+检测中断或明显移动会重新计算稳定时间，但已上报状态会保留到消失超时。
 
 ---
 
@@ -142,7 +144,7 @@ person 类 且 框底边中点 ∈ doorstep_poly
 
 | 方法 | 路径 | 返回 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/health` | JSON | `fps` / `ring` / `preview_clients` / `detector` 后端 / `clips_active` |
+| GET | `/health` | JSON | `fps` / `ring` / 两路 `detector` 后端与错误 / `clips_active` |
 | GET | `/snapshot.jpg` | JPEG | 缓冲里最新帧（640 宽） |
 | GET | `/stream` | MJPEG | 带 ROI 框与检测框，仅在有客户端时编码 |
 | GET | `/events?limit=20` | JSON | 倒序读 `events.jsonl` 尾部 |
@@ -223,6 +225,46 @@ sounddevice 播放（采样率由 TTS 返回，不写死 16 k）
 **模型说"开"不等于会开。** 真正的开锁要 `lockd` 校验后经 HMAC 通道下发给 MCU，
 而 MCU 才是唯一持有锁体驱动的实体（第二阶段）。
 
+---
+
+### 4.5 lockd：开锁决策与锁体驱动
+
+指纹识别、语音请求、界面按钮**都不直接开锁**，统一交给 `lockd`（`127.0.0.1:8086`）：
+
+```
+fingerprintd  finger.match {id, score}
+ui 按钮       POST /unlock {source:"ui"}
+audiood       request_unlock（恒带 needs_local_auth）
+        └──────────────┬──────────────┘
+                       ▼
+              lockd：策略判定
+        ┌──────────────────────────────┐
+        │ 已登记？/ 分数 ≥60？/ 重复？/ 锁定？│
+        └──────────────┬──────────────┘
+                       ▼
+              LockDriver：通电 N 秒 → 断电
+                       ▼
+        events.jsonl：door.opened / lock.rejected / lock.fault
+```
+
+**为什么单独一个进程**：驱动（GPIO/MCU）和策略（谁能开）是两件会分别变化的事。
+换锁体只改 `drivers.py`，改策略只改 `service.py`，指纹代码一行不动。
+
+| 文件 | 职责 | 关键符号 |
+| --- | --- | --- |
+| `drivers.py` | 只负责通电/断电 | `MockDriver`, `GpioRelayDriver`, `McuDriver`, `build_driver` |
+| `service.py` | 策略、审计、HTTP | `Policy`, `LockService`, `create_app` |
+| `protocol.py` | M2 ↔ MCU 帧 | `build_frame`, `parse_frame`, `crc16` |
+| `client.py` | 服务间调用 | `request_unlock`, `health` |
+
+**失效方向**：任何异常路径都先断电再报错；驱动抛错时 HTTP 返回
+`{"ok": false, "reason_code": "driver"}`，界面显示"锁体未响应"而不是"已开锁"。
+
+**GPIO 权限**：`/dev/gpiochip*` 默认 `root:root 0600`，`pi` 直接 `gpioset` 会
+`Permission denied`。`deploy/install_gpio_access.sh` 建 `gpio` 组并写 udev 规则，
+需要重新登录生效。不要用 `sudo` 跑 lockd 来绕过 —— 那等于给整个服务 root 权限。
+
+
 ### 4.4 Coze 能力边界（已实测 `cozepy 0.20.0`）
 
 | 能力 | 接口 | 实测 |
@@ -257,7 +299,7 @@ MQTT 主题：`lock/event/<type>`，QoS 1，同时追加到 `data/events.jsonl`�
 | --- | --- |
 | `person.detected` | `bbox` |
 | `intrusion` | `dwell_s`, `night`, `bbox` |
-| `package.detected` | `object`, `static_s`, `bbox`, `person_left_s` |
+| `package.detected` | `object`, `static_s`, `bbox` |
 
 `ts` 是**墙上时钟 ISO8601 带时区**，可直接被前端/规则消费；
 内部计时一律用 `time.monotonic()`，两者不混用（这是踩过的坑）。
@@ -287,7 +329,11 @@ deploy/systemd/
 ├── visiond.env.example          VISION_SOURCE / ROI / MQTT ...
 ├── audiood.service              SupplementaryGroups=audio
 │                                CPUQuota=200%  MemoryMax=512M
-└── audiood.env.example          COZE_API_TOKEN / 超时 / 音频设备
+├── audiood.env.example          COZE_API_TOKEN / 超时 / 音频设备
+├── fingerprintd.service         SupplementaryGroups=dialout
+├── fingerprintd.env.example     FINGERPRINT_SERIAL / 波特率
+├── lockd.service                SupplementaryGroups=gpio（用 gpio 驱动时）
+└── lockd.env.example            LOCK_DRIVER / 引脚 / 策略阈值
 ```
 
 ```bash
@@ -295,8 +341,7 @@ sudo install -d -m 700 /etc/doorlock
 sudo cp deploy/systemd/*.env.example /etc/doorlock/   # 改成 .env 并填密钥
 sudo chmod 600 /etc/doorlock/*.env
 sudo cp deploy/systemd/*.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now visiond audiood
+sudo systemctl daemon-reloadsudo systemctl enable --now visiond audiood
 ```
 
 `CPUQuota` 不是为了省电，是为了**保证对讲不卡**：视频编码吃满 CPU 会让
@@ -314,6 +359,11 @@ WebRTC 音频抖动到无法通话。
 | 事件落盘时间戳 | ✅ 实测 | `2026-11-02T18:36:23.266+08:00` |
 | 路径穿越防护 | ✅ 代码 | `http.py: media()` resolve + startswith |
 | Coze SDK 接口 | ✅ 实测 | 8 个属性链全部存在 |
+| AS608 识别 + 0x17 回退 | ✅ 实测 | 真手指识别，score 92 |
+| lockd 策略链 | ✅ 实测 | 未登记拒绝、重复拦截、存证抓拍、事件落盘 |
+| lockd mock 驱动 | ✅ 实测 | 开锁 1 s 后自动回锁 |
+| **lockd gpio 驱动** | ⚠️ 未接线 | 代码路径已验证会正确报 `Permission denied`，需 `install_gpio_access.sh` |
+| **lockd mcu 驱动** | ❌ 未测 | 无 ESP32 硬件，帧编解码已单测 |
 | **RKNN 推理** | ❌ 未测 | 缺 `.rknn` 模型文件 |
 | **真实摄像头** | ❌ 未测 | 当前只有 `source=test` |
 | **MQTT 发布** | ❌ 未测 | 未配 broker |

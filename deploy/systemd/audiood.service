@@ -8,7 +8,7 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/smart-door-lock
 EnvironmentFile=-/etc/doorlock/audiood.env
-ExecStart=/home/pi/smart-door-lock/.venv/bin/python -m device.audiood.app
+ExecStart=/home/pi/smart-door-lock/.venv/bin/python /home/pi/smart-door-lock/main.py --audio-only
 Restart=always
 RestartSec=3
 

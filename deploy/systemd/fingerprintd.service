@@ -1,0 +1,17 @@
+[Unit]
+Description=fingerprintd - AS608 fingerprint identification service
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/smart-door-lock
+EnvironmentFile=-/etc/doorlock/fingerprintd.env
+ExecStart=/home/pi/smart-door-lock/.venv/bin/python /home/pi/smart-door-lock/main.py --fingerprint-only
+Restart=always
+RestartSec=3
+SupplementaryGroups=dialout
+ReadWritePaths=/home/pi/smart-door-lock/data
+
+[Install]
+WantedBy=multi-user.target

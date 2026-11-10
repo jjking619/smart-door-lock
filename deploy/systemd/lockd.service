@@ -1,0 +1,17 @@
+[Unit]
+Description=lockd - unlock decision and lock hardware driver
+After=network.target visiond.service
+Wants=visiond.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/smart-door-lock
+EnvironmentFile=-/etc/doorlock/lockd.env
+ExecStart=/home/pi/smart-door-lock/.venv/bin/python /home/pi/smart-door-lock/main.py --lock-only
+Restart=always
+RestartSec=3
+ReadWritePaths=/home/pi/smart-door-lock/data
+
+[Install]
+WantedBy=multi-user.target

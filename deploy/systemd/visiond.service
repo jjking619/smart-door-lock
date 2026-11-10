@@ -8,7 +8,7 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/smart-door-lock
 EnvironmentFile=-/etc/doorlock/visiond.env
-ExecStart=/home/pi/smart-door-lock/.venv/bin/python -m device.visiond.app
+ExecStart=/home/pi/smart-door-lock/.venv/bin/python /home/pi/smart-door-lock/main.py --backend-only
 Restart=always
 RestartSec=3
 
