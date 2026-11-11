@@ -48,7 +48,7 @@ class RealtimeConfig:
     vad_silence_ms: int = _env_int("COZE_VAD_SILENCE_MS", 500) or 500
     idle_timeout_s: float = float(os.getenv("COZE_SESSION_IDLE_S", "15"))
     max_session_s: float = float(os.getenv("COZE_SESSION_MAX_S", "120"))
-    prologue: str = os.getenv("COZE_PROLOGUE", "您好，请问有什么事？")
+    prologue: str = os.getenv("COZE_PROLOGUE", "Hello, how can I help?")
 
 
 class _Player:

@@ -57,6 +57,14 @@ class I18nTests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(page.btn_talk.text(), "Intercom")
         self.assertEqual(page.tile_package.title.text(), "Parcel")
+        for status, expected in {
+            "正在播放开场提示": "Playing greeting",
+            "请说话": "Please speak",
+            "没有听到清晰语音": "No clear speech detected",
+        }.items():
+            with self.subTest(status=status):
+                page._update_conversation([], status)
+                self.assertEqual(page.conversation_status.text(), expected)
         page._update_conversation([{"role": "visitor", "text": "你好"}], "请继续说话")
         self.assertIn("You: 你好", page.conversation_text.toPlainText())
         self.assertEqual(page.conversation_status.text(), "Please keep talking")

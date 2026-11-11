@@ -1,24 +1,14 @@
-"""一次性把 Coze 智能体建好并发布到 API 渠道，免去控制台手工操作。
-
-## 为什么非要一个 bot_id
-
-Coze 的 PAT（`COZE_API_TOKEN`）只回答「你是谁」，它里面不含任何对话配置：
-没有提示词、没有模型、没有音色、没有渠道。WebSocket 实时语音的每一帧音频
-都必须带一个 `bot_id`，服务端才知道要把这句话交给哪个智能体、用哪套人设回。
-
-换句话说，API 不是对话服务本身，而是「操作智能体」的遥控器。
-所以「只配 API 就能说话」的完整体验 = 用 API 把 bot 建好、发布好，
-之后运行时确实只需要 token + bot_id 两个变量。
+"""创建或更新 Coze 智能体，并发布到 API 渠道。
 
 ## 用法
 
-    # 创建（或复用同名智能体）→ 发布到 API 渠道 → 把 bot_id 写回配置文件
+    # 创建或更新同名智能体 → 发布到 API 渠道 → 把 bot_id 写回配置文件
     .venv/bin/python -m audio.coze_setup --write-env deploy/systemd/audiood.env
 
     # 只看会做什么，不落盘
     .venv/bin/python -m audio.coze_setup --dry-run
 
-幂等：同名的智能体已存在时不会重复创建；已经发布过时 publish 会直接返回。
+同名智能体已存在时会更新其人设和开场白，不会重复创建；模型配置保持不变。
 """
 
 from __future__ import annotations
@@ -36,21 +26,21 @@ logger = logging.getLogger("coze_setup")
 
 BOT_NAME = os.getenv("COZE_SETUP_BOT_NAME", "门锁访客助手")
 
-#: 门口对讲的人设。刻意写得很短：门口对话要的是快和稳，不是能聊。
-DEFAULT_PROMPT = """你是装在住户门口的门锁对讲助手，隔着门和访客说话。
+#: Doorstep dialogue should stay brief, clear, and safe.
+DEFAULT_PROMPT = """You are a smart door lock intercom assistant speaking with visitors at a residence.
 
-规则：
-1. 普通话回答，每次一到两句，单句不超过 30 字，不要长篇大论。
-2. 礼貌、简短，先确认来意：找谁、什么事。
-3. 绝不透露住户是否在家、门牌内布局、家人姓名电话等隐私。
-4. 访客提到「开门」时，只能说「我先帮你通知屋主确认」，绝不承诺已开门，
-   也绝不声称自己可以开门。
-5. 快递、外卖：请对方放在指定位置或稍后再说，不要让其进入。
-6. 听不清就请对方再说一遍，不要猜测。
-7. 遇到维修、物业、紧急求助（火警、漏水、有人受伤）时，记录来意并说明会立刻通知屋主。
+Rules:
+1. Use English by default. Reply in the same language as the visitor's latest message, and switch languages when the visitor does. If their language is unclear, use English.
+2. Keep each reply polite and brief: one or two short sentences, no more than 30 words total.
+3. Ask who the visitor is here to see and what they need.
+4. Never reveal whether the resident is home, household details, or private information.
+5. If asked to unlock the door or let someone in, say you will notify the homeowner for approval. Never claim the door is unlocked or that you can unlock it.
+6. Ask delivery and courier visitors to leave items in the designated place or come back later. Do not invite them inside.
+7. If you did not understand, ask the visitor to repeat themselves. Never guess.
+8. For maintenance, property management, or emergencies, briefly acknowledge the request and say you will notify the homeowner.
 """
 
-PROLOGUE = os.getenv("COZE_SETUP_PROLOGUE", "您好，请问找哪位？")
+PROLOGUE = os.getenv("COZE_SETUP_PROLOGUE", "Hello, who are you here to see?")
 
 
 def _mask(value: str) -> str:
@@ -80,7 +70,15 @@ async def ensure_bot(coze, space_id: str, name: str, *, dry_run: bool) -> str:  
 
     existing = await _find_bot(coze, space_id, name)
     if existing is not None:
-        logger.info("已存在同名智能体 %s (published=%s)", existing.bot_id, existing.is_published)
+        if dry_run:
+            logger.info("[dry-run] 将更新同名智能体 %s 并保留其模型配置", existing.bot_id)
+            return str(existing.bot_id)
+        await coze.bots.update(
+            bot_id=str(existing.bot_id),
+            prompt_info=cozepy.BotPromptInfo(prompt=DEFAULT_PROMPT),
+            onboarding_info=cozepy.BotOnboardingInfo(prologue=PROLOGUE),
+        )
+        logger.info("已更新智能体提示词和开场白 %s", existing.bot_id)
         return str(existing.bot_id)
 
     if dry_run:
