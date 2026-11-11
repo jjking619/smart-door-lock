@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,6 +11,40 @@ from vision.detector import Detection, draw
 
 
 class DualDetectorTests(unittest.TestCase):
+    def test_models_use_separate_cores_and_run_concurrently(self):
+        cfg = Config()
+        cfg.package_model_path = "parcel.rknn"
+        barrier = threading.Barrier(2)
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        person = Detection(0, "person", 0.9, (20, 40, 100, 300))
+        parcel = Detection(1, "good-parcel", 0.9, (400, 260, 450, 330))
+
+        def detect(result):
+            def infer(image):
+                self.assertIs(image, frame)
+                barrier.wait(timeout=3)
+                return [result]
+            return infer
+
+        with tempfile.TemporaryDirectory() as path:
+            cfg.data_dir = path
+            with patch("vision.app.Detector") as factory:
+                human, package = Mock(), Mock()
+                factory.side_effect = [human, package]
+                human.detect.side_effect = detect(person)
+                package.detect.side_effect = detect(parcel)
+                svc = VisionService(cfg)
+            try:
+                self.assertEqual(factory.call_args_list[0].kwargs["core_mask"], 1)
+                self.assertEqual(factory.call_args_list[1].kwargs["core_mask"], 2)
+                self.assertEqual(svc.detect_frame(frame), [person, parcel])
+                self.assertIsNone(svc.detector_error)
+                self.assertIsNone(svc.package_detector_error)
+            finally:
+                svc.close()
+            with self.assertRaises(RuntimeError):
+                svc._inference_executor.submit(lambda: None)
+
     def test_disabling_package_model_restores_legacy_package_classes(self):
         with patch.dict("os.environ", {"VISION_PACKAGE_MODEL": ""}, clear=False):
             cfg = Config()
@@ -28,7 +63,7 @@ class DualDetectorTests(unittest.TestCase):
             self.assertIsNone(svc.package_detector)
             self.assertIn("类别不匹配", svc.package_detector_error)
             self.assertEqual(factory.call_count, 1)
-            svc.bus.close()
+            svc.close()
 
     def test_dual_detections_and_rules(self):
         cfg = Config()
@@ -52,7 +87,7 @@ class DualDetectorTests(unittest.TestCase):
             self.assertIn("person.detected", [event.kind for event in first])
             self.assertIn("package.detected", [event.kind for event in last])
             package.set_names.assert_called_once_with(["defect-parcel", "good-parcel"])
-            svc.bus.close()
+            svc.close()
 
     def test_detect_frame_drops_package_boxes_on_people(self):
         cfg = Config()
@@ -72,7 +107,7 @@ class DualDetectorTests(unittest.TestCase):
                 svc = VisionService(cfg)
             detections = svc.detect_frame(np.zeros((360, 640, 3), dtype=np.uint8))
             self.assertEqual(detections, [person, parcel])
-            svc.bus.close()
+            svc.close()
 
     def test_only_people_and_packages_reach_preview(self):
         cfg = Config()
@@ -116,7 +151,7 @@ class DualDetectorTests(unittest.TestCase):
             self.assertEqual(preview_draw.call_args.args[1], [person, good, defect])
             self.assertTrue(svc.preview_jpeg)
             camera.release.assert_called_once()
-            svc.bus.close()
+            svc.close()
 
     def test_single_model_retains_only_people_and_configured_package_classes(self):
         cfg = Config()
@@ -136,7 +171,7 @@ class DualDetectorTests(unittest.TestCase):
                 ]
                 svc = VisionService(cfg)
             self.assertEqual(svc.detect_frame(frame), [person, suitcase, backpack, handbag])
-            svc.bus.close()
+            svc.close()
 
     def test_single_model_respects_custom_detection_classes(self):
         cfg = Config()
@@ -153,7 +188,7 @@ class DualDetectorTests(unittest.TestCase):
                 factory.return_value.detect.return_value = [human, carton, person]
                 svc = VisionService(cfg)
             self.assertEqual(svc.detect_frame(frame), [human, carton])
-            svc.bus.close()
+            svc.close()
 
     def test_package_failure_does_not_hide_person_detection(self):
         cfg = Config()
@@ -171,4 +206,8 @@ class DualDetectorTests(unittest.TestCase):
                 detections = svc.detect_frame(np.zeros((10, 10, 3), dtype=np.uint8))
             self.assertEqual(detections, [person])
             self.assertEqual(svc.package_detector_error, "NPU failure")
-            svc.bus.close()
+            package.detect.side_effect = None
+            package.detect.return_value = []
+            self.assertEqual(svc.detect_frame(np.zeros((10, 10, 3), dtype=np.uint8)), [person])
+            self.assertIsNone(svc.package_detector_error)
+            svc.close()

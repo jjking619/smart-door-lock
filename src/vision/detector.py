@@ -92,11 +92,13 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, thr: float) -> list[int]:
 
 class Detector:
     def __init__(self, model_path: str, input_size: int = 640, conf: float = 0.35,
-                 nms: float = 0.45, pad_color: int | None = None) -> None:
+                 nms: float = 0.45, pad_color: int | None = None,
+                 core_mask: int = 0) -> None:
         self.input_size = input_size
         self.conf = conf
         self.nms = nms
         self.pad_color = pad_color
+        self.core_mask = core_mask
         self.backend = "none"
         self._sess = None
         self._rknn = None
@@ -119,8 +121,7 @@ class Detector:
         if rknn.load_rknn(path) != 0:
             rknn.release()
             raise RuntimeError("load_rknn 失败")
-        # core_mask 0 自动选核；多模型时可指定 1/2/4 分摊三核
-        if rknn.init_runtime(core_mask=RKNNLite.NPU_CORE_AUTO) != 0:
+        if rknn.init_runtime(core_mask=self.core_mask) != 0:
             rknn.release()
             raise RuntimeError("init_runtime 失败")
         self._rknn = rknn

@@ -74,7 +74,8 @@ HTTP 控制接口为 `POST /recording`，JSON 请求体为 `{"on": true}` 或 `{
 启动时门口已存在的包裹也会在稳定后上报，进程重启后去重状态不会保留。
 建议调整相机角度，确保摄像头能看到包裹并尽量避免遮挡。
 
-默认使用两个模型顺序推理同一帧：`yolov5s-rk3576.rknn` 只保留人员检测结果；
+默认使用两个模型并行推理同一帧：人员模型固定 NPU Core0，包裹模型固定 Core1。
+`yolov5s-rk3576.rknn` 只保留人员检测结果；
 `parcel-yolov5n-rk3576-fp.rknn` 检测 `defect-parcel`、`good-parcel` 两类。
 实时预览只绘制人员和包裹的检测框，不显示其他类别的检测框；画面中的其他物体仍然可见。
 主模型本身仍推理 COCO 类别，筛选发生在推理之后，因此不会减少模型的推理量。
@@ -90,7 +91,9 @@ cd /home/pi/smart-door-lock
 此时包裹候选默认改回 `suitcase,backpack,handbag`，不能识别普通纸箱。
 事件会落盘并显示在界面，可选 MQTT；不包含手机推送。部署后检查 `/health` 的 `detector`
 和 `package_detector` 均为 `rknn`，且 `detector_error`、`package_detector_error` 均为空。
-两个模型顺序运行会降低帧率。包裹模型的训练数据中没有人，近景人脸、躯干常被误判为
+每轮等待两路推理完成后统一过滤结果；实际帧率仍受采集、CPU 前后处理和编码影响。
+单模型或一路加载失败时仅运行可用模型；错误仍通过日志和 `/health` 报告。
+包裹模型的训练数据中没有人，近景人脸、躯干常被误判为
 `defect-parcel`，所以包裹框需要额外通过两道过滤：框面积超过画面 `VISION_PACKAGE_MAX_AREA`
 （默认 30%）的丢弃；框中心位于人框上 3/4，且至少 `VISION_PACKAGE_PERSON_OVERLAP`
 （默认 50%）落在人框内的丢弃，这类框通常是人脸、身体或手持物品。人框下 1/4（脚边）的包裹
@@ -102,7 +105,7 @@ cd /home/pi/smart-door-lock
 
 ```bash
 cd /home/pi/smart-door-lock
-uv pip install --python .venv/bin/python -r src/vision/requirements.txt
+uv pip install --python .venv/bin/python -r requirements.txt
 
 # 1) 无硬件自测（合成画面 + 强制无模型），验证录像/缓冲/HTTP 骨架
 .venv/bin/python -m vision.selftest

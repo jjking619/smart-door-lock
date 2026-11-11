@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import glob
 import logging
 import os
@@ -138,7 +139,7 @@ class VisionService:
         self.detector_error: str | None = None
         try:
             self.detector = Detector(
-                cfg.model_path, cfg.model_input, cfg.conf, cfg.nms
+                cfg.model_path, cfg.model_input, cfg.conf, cfg.nms, core_mask=1
             )
             self.detector.set_names(cfg.model_class_names or _default_names())
             logger.info("检测器就绪 backend=%s", self.detector.backend)
@@ -158,7 +159,8 @@ class VisionService:
                 ):
                     raise ValueError("包裹检测类别与包裹模型类别不匹配")
                 self.package_detector = Detector(
-                    cfg.package_model_path, cfg.model_input, cfg.conf, cfg.nms, pad_color=114
+                    cfg.package_model_path, cfg.model_input, cfg.conf, cfg.nms,
+                    pad_color=114, core_mask=2,
                 )
                 self.package_detector.set_names(list(cfg.package_model_class_names))
                 logger.info("包裹检测器就绪 backend=%s", self.package_detector.backend)
@@ -166,13 +168,26 @@ class VisionService:
                 self.package_detector_error = str(exc)
                 logger.error("包裹检测器初始化失败 %s: %s", cfg.package_model_path, exc)
 
+        self._inference_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="parcel-inference")
+            if self.detector is not None and self.package_detector is not None else None
+        )
+
     def detect_frame(self, frame: np.ndarray) -> list[Detection]:
         detections: list[Detection] = []
+        # Submit the parcel model first so both cores process the same frame concurrently.
+        package_future = (
+            self._inference_executor.submit(self.package_detector.detect, frame)
+            if self._inference_executor is not None and self.package_detector is not None else None
+        )
         for label, detector in (("人员", self.detector), ("包裹", self.package_detector)):
             if detector is None:
                 continue
             try:
-                found = detector.detect(frame)
+                if label == "包裹" and package_future is not None:
+                    found = package_future.result()
+                else:
+                    found = detector.detect(frame)
                 if label == "包裹":
                     allowed_names = self.cfg.package_class_names
                     self.package_detector_error = None
@@ -196,7 +211,12 @@ class VisionService:
         try:
             await loop.run_in_executor(None, self._loop)
         finally:
-            self.bus.close()
+            self.close()
+
+    def close(self) -> None:
+        if self._inference_executor is not None:
+            self._inference_executor.shutdown(wait=True)
+        self.bus.close()
 
     def stop(self) -> None:
         self._stop.set()

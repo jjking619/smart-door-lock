@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+import sys
+import types
 
 import numpy as np
 
@@ -31,6 +33,18 @@ def _detector(outputs: list[np.ndarray], input_size: int = 640) -> Detector:
 
 
 class DetectorTests(unittest.TestCase):
+    def test_rknn_initialization_uses_requested_core_mask(self) -> None:
+        api = types.ModuleType("rknnlite.api")
+        runtime = Mock()
+        runtime.load_rknn.return_value = 0
+        runtime.init_runtime.return_value = 0
+        api.RKNNLite = Mock(return_value=runtime)
+        for mask in (0, 1, 2):
+            with self.subTest(mask=mask), patch.dict(sys.modules, {"rknnlite.api": api}):
+                with patch("vision.detector.os.path.exists", return_value=True):
+                    Detector("model.rknn", core_mask=mask)
+                runtime.init_runtime.assert_called_with(core_mask=mask)
+
     def test_full_frame_zones_draw_on_all_edges_with_distinct_labels(self) -> None:
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
         polygon = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]

@@ -1,8 +1,0 @@
-# audiood —— 门铃对讲 / 自动应答
-# 注意：不要写 `wave`，标准库已自带，PyPI 上同名包是抢注的空壳包。
-aiohttp>=3.9
-cozepy>=0.20            # 需要 audio.transcriptions/speech/voices 接口
-av>=12.0                # aiortc 需要的音视频编解码
-aiortc>=1.9
-numpy>=1.26,<2
-sounddevice>=0.4.6      # 优于 pyaudio：PortAudio 预编译，ARM64 免编译

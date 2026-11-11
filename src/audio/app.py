@@ -26,6 +26,7 @@ import sounddevice as sd
 from aiohttp import web
 
 from .coze_audio import CozeAudio, safe_synthesize, safe_transcribe
+from .coze_bot import requests_unlock
 from .coze_client import CozeConfigError, CozeUnavailable, answer_with_fallback
 from .logging_setup import configure_audio_logging
 
@@ -56,6 +57,14 @@ UNLOCK_REPLY_TEXT = {
     "allow": "主人已为您开门，请进。",
     "deny": "抱歉，主人暂时无法为您开门。",
 }
+UNLOCK_REPLY_TEXT_EN = {
+    "allow": "The owner has unlocked the door. Please come in.",
+    "deny": "Sorry, the owner cannot open the door for you right now.",
+}
+
+
+def _uses_chinese(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
 
 
 def _realtime_config_error() -> str | None:
@@ -239,7 +248,8 @@ class TalkService:
                        "允许" if decision == "allow" else "拒绝", req_id, str(req["text"])[:60],
                        unlocked, reason)
         _record_unlock_event(req, decision, unlocked=unlocked, reason=reason)
-        reply = UNLOCK_REPLY_TEXT["allow" if decision == "allow" and unlocked is not False else "deny"]
+        replies = UNLOCK_REPLY_TEXT if _uses_chinese(str(req["text"])) else UNLOCK_REPLY_TEXT_EN
+        reply = replies["allow" if decision == "allow" and unlocked is not False else "deny"]
         self._conversation.append({"role": "assistant", "text": reply, "partial": False})
         self._schedule_reply(reply)
         return {"ok": True, "id": req_id, "decision": decision}
@@ -466,7 +476,17 @@ class TalkService:
             self._conversation_status = "云端对话失败，已结束"
             if str(COZE_QUOTA_ERROR_CODE) in message:
                 self._set_talk_error(COZE_QUOTA_ERROR_TEXT, COZE_QUOTA_ERROR_CODE)
-            await _play_fallback(self.out_dev)
+            visitor_text = next(
+                (str(item["text"]) for item in reversed(self._conversation) if item["role"] == "visitor"), ""
+            )
+            reply = (
+                "您好，主人暂时不在，请在滴声后留言。"
+                if _uses_chinese(visitor_text)
+                else "Sorry, the connection failed. Please try again or leave a message."
+            )
+            self._conversation_update({"type": "assistant_final", "text": reply})
+            self._conversation_status = "云端对话失败，已结束"
+            await _play_fallback(self.out_dev, reply)
 
     async def _run_realtime_once(self) -> None:
         from .coze_realtime import RealtimeVoiceSession  # noqa: PLC0415
@@ -516,6 +536,8 @@ class TalkService:
             reply_pcm = b""
         else:
             visitor_text = await safe_transcribe(self.audio, pcm)
+            if requests_unlock(visitor_text):
+                self.raise_unlock_request(visitor_text)
             ans = await answer_with_fallback(visitor_text or "", self.bot)
             reply_pcm, rate = await safe_synthesize(self.audio, ans.text)
             if reply_pcm:
@@ -645,14 +667,15 @@ def _public_unlock_request(req: dict[str, object] | None) -> dict[str, object] |
     }
 
 
-async def _play_fallback(out_dev: int | None) -> None:
-    ans = await answer_with_fallback("", None)
+async def _play_fallback(out_dev: int | None, text: str | None = None) -> None:
+    if text is None:
+        text = (await answer_with_fallback("", None)).text
     try:
         audio = CozeAudio()
     except CozeUnavailable:
-        logger.warning("无法播报兜底话术: %s", ans.text)
+        logger.warning("无法播报兜底话术: %s", text)
         return
-    pcm, rate = await safe_synthesize(audio, ans.text)
+    pcm, rate = await safe_synthesize(audio, text)
     if pcm:
         await asyncio.get_running_loop().run_in_executor(None, play_pcm, pcm, rate, out_dev)
 

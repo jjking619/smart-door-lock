@@ -53,7 +53,7 @@
                         │ cap.read() ──失败5次──► release + 重开（热插拔）      │
                         │      │                                              │
                         │      ├─► 每 3 帧 ──► 人员模型 + 包裹模型 ──► Rules.update()
-                        │      │                 (顺序推理，结果合并)    │
+                        │      │                 (双核并行，结果合并)    │
                         │      │                                        │ RuleEvent
                         │      ├─► resize 640w ──► JPEG ──► RingBuffer  │
                         │      │                          (10 s)        │
@@ -79,7 +79,7 @@
 | 设计 | 代码位置 | 为什么 |
 | --- | --- | --- |
 | 采集在**单线程**里跑 | `app.py: VisionService._loop` | 相机句柄跨线程会抢帧、读到旧帧 |
-| 推理每 N 帧一次 | `config.infer_every_n=3` | 两个模型顺序推理同一帧；实际采集帧率取决于推理耗时 |
+| 推理每 N 帧一次 | `config.infer_every_n=3` | 人员 Core0、包裹 Core1 并行推理同一帧；完成后合并过滤，退出时等待工作线程结束 |
 | 环形缓冲只存 **640 宽 JPEG** | `ring.py: RingBuffer` | 原始帧 10 s 要 276 MB，JPEG 约 3 MB |
 | pre-roll 用**单调时钟**索引 | `app.py: _handle_event` | 环形缓冲只认 `monotonic`，墙上时钟会因 NTP 跳变丢帧 |
 | 事件时间戳用**墙上时钟** | `rules.py: wall = time.time()` | 已修 bug：早期版本落库变成 1970 年 |

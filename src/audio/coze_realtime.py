@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import sounddevice as sd
 
-from .coze_bot import _UNLOCK_RE, validate_bot_id
+from .coze_bot import requests_unlock, validate_bot_id
 from .coze_client import COZE_API_TOKEN, COZE_BASE_URL, CozeConfigError, build_async_client
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,7 @@ class RealtimeVoiceSession:
         self._touch()
         self.transcripts.append(("visitor", text))
         logger.info("访客: %s", text)
-        if _UNLOCK_RE.search(text):
+        if requests_unlock(text):
             # 只上报，开锁必须由 lockd 本地鉴权
             logger.warning("访客提到开门，已上报待屋主确认（不会自动开锁）")
             self._emit({"type": "visitor.request_unlock", "text": text, "needs_local_auth": True})

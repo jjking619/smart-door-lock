@@ -6,6 +6,10 @@
 
 设置 `COZE_MODE=streaming` 可使用独立的 Coze 流式 ASR WebSocket、Bot 文本流和流式 TTS WebSocket。麦克风按 20 ms PCM 分片上送，静音检测结束一轮；Bot 回复按标点分段送入 TTS，音频分片到达后立即播放。此模式仍需要已发布的 Coze Bot 和 `COZE_BOT_ID`；它不创建 Bot，也不绕过 Coze 额度。`realtime` 模式仍保留为 Coze 一体化语音会话。若 Coze 返回 `4028`，服务会在冷却后自动重试（默认 60 秒）。
 
+本地开锁请求识别支持中文及 `open lock`、`open the door`、`unlock`、`let me in`，
+仅推送屋主确认，不直接驱动门锁。流式云端回复失败时，界面和播报统一使用
+匹配访客中文/英文的兜底话术；开锁确认结果也按请求语言回复。
+
 ## 为什么不是直接抄 Coze_Bot_AI_Example
 
 参考仓库 `wilsonwussd/Coze_Bot_AI_Example` 是 PyQt5 桌面版（按住按钮说话 → 松开 → ASR → Coze → TTS → 播放），能做原型，但**不能直接用于门锁**：

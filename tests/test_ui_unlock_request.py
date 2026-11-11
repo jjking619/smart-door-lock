@@ -43,6 +43,15 @@ class UnlockRequestPopupTests(unittest.TestCase):
         self.assertIs(self.window._unlock_dialog, dialog)
         self.assertEqual(self.window.api.get_bytes_url.call_count, 1)
 
+    def test_english_request_opens_popup_without_unlocking(self):
+        self.window._on_unlock_status({"unlock_request": {**REQ, "text": "Open lock."}})
+        dialog = self.window._unlock_dialog
+        self.assertIsNotNone(dialog)
+        self.assertTrue(dialog.isVisible())
+        self.assertIn("Open lock.", dialog.said.text())
+        self.window.api.lock_unlock.assert_not_called()
+        self.window.api.audio_unlock_decision.assert_not_called()
+
     def test_allow_unlocks_through_lockd_then_reports_decision(self):
         self.window._on_unlock_status({"unlock_request": REQ})
         dialog = self.window._unlock_dialog

@@ -11,7 +11,7 @@ From the project root:
 
 ```sh
 uv venv --python /usr/bin/python3 .venv-ui
-uv pip install --python .venv-ui/bin/python -r requirements-ui.txt
+uv pip install --python .venv-ui/bin/python -r requirements.txt
 .venv/bin/python main.py --ui-only --base http://127.0.0.1:8083
 ```
 

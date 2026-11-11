@@ -22,7 +22,7 @@ from .coze_client import (
 logger = logging.getLogger(__name__)
 
 COZE_BOT_ID = os.getenv("COZE_BOT_ID", "")
-COZE_BOT_TIMEOUT_S = float(os.getenv("COZE_BOT_TIMEOUT_S", "8.0"))
+COZE_BOT_TIMEOUT_S = float(os.getenv("COZE_BOT_TIMEOUT_S", "15.0"))
 COZE_USER_ID = os.getenv("COZE_USER_ID", "doorbell")
 
 #: 明确表达"要求开门"的说法。只作为**提示**上报，绝不据此开锁。
@@ -30,7 +30,12 @@ _UNLOCK_HINTS = (
     "开门", "开锁", "把门打开", "帮我开", "让我进去", "帮我开门",
     "密码", "钥匙", "怎么进去",
 )
-_UNLOCK_RE = re.compile("|".join(_UNLOCK_HINTS))
+_UNLOCK_RE = re.compile(
+    "|".join(_UNLOCK_HINTS)
+    + r"|\b(?:open|unlock)\s+(?:(?:the|this|my)\s+)?(?:door|lock)\b"
+    + r"|\bunlock\b|\blet\s+me\s+in\b",
+    re.IGNORECASE,
+)
 
 
 def requests_unlock(text: str) -> bool:
