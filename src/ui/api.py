@@ -22,7 +22,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 
 from . import theme
 
-# 事件分类：给「事件」页的筛选条用
+# 事件分类：记录中心与事件页共用
 CATEGORY_OF = {
     "person.detected": "intrusion",
     "intrusion": "intrusion",
@@ -30,21 +30,21 @@ CATEGORY_OF = {
     "package.picked": "package",
     "finger.match": "access",
     "finger.reject": "access",
-    "finger.enrolled": "access",
-    "finger.deleted": "access",
-    "finger.renamed": "access",
+    "finger.enrolled": "system",
+    "finger.deleted": "system",
+    "finger.renamed": "system",
     "door.opened": "access",
     "door.closed": "access",
     "unlock.remote": "access",
     "unlock.request": "access",
-    "tamper": "system",
+    "tamper": "intrusion",
 }
 
 CATEGORIES: list[tuple[str, str]] = [
     ("all", "全部"),
-    ("intrusion", "入侵"),
-    ("package", "快递"),
+    ("intrusion", "安全"),
     ("access", "出入"),
+    ("package", "快递"),
     ("system", "系统"),
 ]
 
@@ -62,6 +62,8 @@ DETAIL_LABELS: dict[str, str] = {
     "finger_id": "指纹 ID",
     "finger": "手指",
     "reason": "原因",
+    "decision_text": "处理",
+    "text": "访客原话",
 }
 
 
@@ -113,6 +115,12 @@ class Event:
             return f"置信度 {self.conf:.2f}"
         if self.kind == "package.detected":
             return f"{d.get('object', '物体')} 静止 {_fmt_duration(d.get('static_s', 0))}"
+        if self.kind == "unlock.request" and "decision" in d:
+            said = str(d.get("text") or "").strip()
+            result = str(d.get("decision_text") or d.get("decision"))
+            if d.get("decision") == "allow" and d.get("unlocked") is False:
+                result += "（未开锁）"
+            return f"{result} · “{said}”" if said else result
         if self.kind in ("finger.match", "unlock.remote", "unlock.request"):
             return f"{d.get('method', '指纹')} · {d.get('user', '主人')} · ID {d.get('finger_id', '--')}"
         if self.kind == "finger.reject":
@@ -139,7 +147,6 @@ class Event:
                 except (TypeError, ValueError):
                     pass
             rows.append((label, str(value)))
-        rows.append(("区域", self.zone))
         rows.append(("来源", str(self.raw.get("source", "visiond"))))
         return rows
 
@@ -417,6 +424,21 @@ class ApiClient(QObject):
         reply = self._request(QNetworkRequest(url))
         reply.finished.connect(lambda: self._finish_json(reply, on_ok, on_err))
 
+    def audio_unlock_decision(
+        self,
+        payload: dict[str, Any],
+        on_ok: Callable[[Any], None] | None = None,
+        on_err: Callable[[str], None] | None = None,
+    ) -> None:
+        """POST audiood /unlock_request：把屋主对访客开门请求的决定告诉语音服务。"""
+        url = self.url("/unlock_request")
+        url.setPort(int(os.getenv("AUDIO_HTTP_PORT", "8084")))
+        request = QNetworkRequest(url)
+        request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
+        request.setTransferTimeout(5000)
+        reply = self._nam.post(request, json.dumps(payload).encode())
+        reply.finished.connect(lambda: self._finish_json(reply, on_ok, on_err))
+
     def _fingerprint_url(self, path: str) -> QUrl:
         port = int(os.getenv("FINGERPRINT_HTTP_PORT", "8085"))
         return QUrl(f"http://127.0.0.1:{port}{path}")
@@ -498,6 +520,13 @@ class ApiClient(QObject):
     ) -> None:
         self.fingerprint_post("/enroll", {"name": name, "finger": finger}, on_ok, on_err)
 
+    def fingerprint_refresh(
+        self,
+        on_ok: Callable[[Any], None] | None = None,
+        on_err: Callable[[str], None] | None = None,
+    ) -> None:
+        self.fingerprint_post("/refresh", {}, on_ok, on_err)
+
     def fingerprint_delete(
         self, location: int,
         on_ok: Callable[[Any], None] | None = None,
@@ -567,6 +596,12 @@ class ApiClient(QObject):
                   on_err: Callable[[str], None] | None = None) -> None:
         """POST /recording {on}：启停事件录像之外的分段在线录像。"""
         self.post_json("/recording", {"on": on}, on_ok, on_err)
+
+    def ui_heartbeat(self, client: str, active: bool = True,
+                     on_ok: Callable[[Any], None] | None = None,
+                     on_err: Callable[[str], None] | None = None) -> None:
+        """POST /ui/heartbeat：续租让 visiond 保持检测；active=False 立即释放。"""
+        self.post_json("/ui/heartbeat", {"client": client, "active": active}, on_ok, on_err)
 
 
 class CapabilityProbe(QObject):

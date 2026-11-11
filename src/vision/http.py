@@ -106,7 +106,26 @@ def create_app(svc: VisionService) -> web.Application:
             "package_detector_error": svc.package_detector_error,
             "clips_active": len(svc.clips),
             "recording": svc.recording_state(),
+            "paused": bool(getattr(svc, "paused", False)),
+            "ui_clients": svc.ui_clients() if hasattr(svc, "ui_clients") else 0,
         })
+
+    async def ui_heartbeat(req: web.Request) -> web.Response:
+        """界面每隔几秒续一次租约；active=false 表示界面正常关闭，立即释放租约。"""
+        try:
+            payload = await req.json()
+        except Exception:  # noqa: BLE001
+            return web.Response(status=400, text="expected JSON {client: string, active?: boolean}")
+        if not isinstance(payload, dict):
+            return web.Response(status=400, text="expected JSON object")
+        client = payload.get("client")
+        active = payload.get("active", True)
+        if not isinstance(client, str) or not client or len(client) > 64:
+            return web.Response(status=400, text="client must be a non-empty string (<=64 chars)")
+        if not isinstance(active, bool):
+            return web.Response(status=400, text="active must be a boolean")
+        svc.ui_heartbeat(client, active)
+        return web.json_response({"ok": True, "paused": svc.paused, "lease_s": cfg.ui_lease_s})
 
     async def recording(req: web.Request) -> web.Response:
         try:
@@ -120,6 +139,8 @@ def create_app(svc: VisionService) -> web.Application:
         return web.json_response({"ok": True, "recording": svc.recording_state()})
 
     async def snapshot(_req: web.Request) -> web.Response:
+        if getattr(svc, "paused", False):
+            return web.Response(status=503, text="camera paused: no UI connected")
         frame = svc.ring.latest()
         if frame is None:
             return web.Response(status=503, text="no frame yet")
@@ -261,6 +282,7 @@ def create_app(svc: VisionService) -> web.Application:
     app.router.add_get("/recordings", recordings)
     app.router.add_post("/talk", talk)
     app.router.add_post("/recording", recording)
+    app.router.add_post("/ui/heartbeat", ui_heartbeat)
     app.router.add_get("/media/{path:.+}", media)
     return app
 

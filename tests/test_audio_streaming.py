@@ -185,7 +185,9 @@ def test_streaming_quota_error_blocks_before_cooldown():
 
             assert result["ok"] is False
             assert "4028" in str(result.get("error"))
-            assert "自动重试" in str(result.get("error"))
+            assert "冷却" in str(result.get("error"))
+            assert "可手动重试" in str(result.get("error"))
+            assert "自动重试" not in str(result.get("error"))
         finally:
             app.COZE_MODE = previous_mode
             app.COZE_QUOTA_RETRY_S = previous_retry

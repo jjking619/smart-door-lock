@@ -19,6 +19,8 @@ class Frame:
     jpeg: bytes
     width: int
     height: int
+    # 该帧对应的检测框（已缩放到本帧尺寸）；只在写事件录像/快照时画上，缓冲里保留原图
+    dets: tuple = ()
 
 
 class RingBuffer:
@@ -32,6 +34,10 @@ class RingBuffer:
     def push(self, frame: Frame) -> None:
         with self._lock:
             self._buf.append(frame)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._buf.clear()
 
     def snapshot(self) -> list[Frame]:
         with self._lock:

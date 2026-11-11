@@ -33,6 +33,10 @@ _UNLOCK_HINTS = (
 _UNLOCK_RE = re.compile("|".join(_UNLOCK_HINTS))
 
 
+def requests_unlock(text: str) -> bool:
+    return bool(_UNLOCK_RE.search(text))
+
+
 def validate_bot_id(bot_id: str) -> str:
     bid = (bot_id or "").strip()
     if not bid:
@@ -222,7 +226,7 @@ class CozeBotClient:
           · 命中"要求开门"的说法 → request_unlock，且 needs_local_auth 恒为 True。
           · 这条路径**不会**导致开锁，只是让 lockd 知道"有人想进"。
         """
-        hit = bool(_UNLOCK_RE.search(user_text))
+        hit = requests_unlock(user_text)
         if not hit:
             return "reply_only", False
         logger.warning("访客提到开门相关词，标记待授权（不会自动开锁）: %s", user_text[:60])

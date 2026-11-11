@@ -7,22 +7,23 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import datetime, timedelta
 import logging
 import os
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QRect, QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QButtonGroup, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QScrollArea,
     QPushButton, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
-    QVBoxLayout, QWidget,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from . import theme
-from .api import Event, Recording
-from .widgets import EventList, card, card_title
+from .api import CATEGORIES, Event, Recording
+from .widgets import card, card_title
 
 log = logging.getLogger(__name__)
 
@@ -63,41 +64,44 @@ class _ListDelegate(QStyledItemDelegate):
         option.widget.style().drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem,
                                             background, painter, option.widget)
         r = option.rect
-        if self._recordings and payload["type"] == "group":
+        if isinstance(payload, dict) and payload["type"] == "group":
             day = payload["day"]
-            arrow = "▸" if day in self._page._collapsed_days else "▾"
-            _draw_text(painter, r.adjusted(8, 0, -55, 0), f"{arrow}  {day}", theme.TEXT_DIM, 12, bold=True)
+            collapsed = (self._page._collapsed_days if self._recordings
+                         else self._page._collapsed_event_days)
+            arrow = "▸" if day in collapsed else "▾"
+            label = day if self._recordings else _event_day_label(day)
+            _draw_text(painter, r.adjusted(8, 0, -55, 0), f"{arrow}  {label}", theme.TEXT_DIM, 14, bold=True)
             _draw_text(painter, QRect(r.right() - 52, r.top(), 48, r.height()),
-                       f"{payload['count']} 条", theme.TEXT_MUTED, 11, align=Qt.AlignmentFlag.AlignRight)
+                       f"{payload['count']} 条", theme.TEXT_MUTED, 13, align=Qt.AlignmentFlag.AlignRight)
         elif self._recordings:
             rec = payload["record"]
-            thumb = QRect(r.left() + 6, r.top() + 5, 72, 40)
+            thumb = QRect(r.left() + 6, r.top() + 6, 78, 44)
             pixmap = self._page._thumb_cache.get(rec.snapshot)
             if pixmap:
                 painter.drawPixmap(thumb, pixmap)
             else:
                 painter.fillRect(thumb, QColor("#2A2438" if rec.kind == "event" else "#1F3230"))
-                _draw_text(painter, thumb, "无图", theme.TEXT_MUTED, 12, align=Qt.AlignmentFlag.AlignHCenter)
+                _draw_text(painter, thumb, "无图", theme.TEXT_MUTED, 14, align=Qt.AlignmentFlag.AlignHCenter)
             x = thumb.right() + 11
             width = max(0, r.right() - x - 5)
-            _draw_text(painter, QRect(x, r.top() + 4, width, 22), rec.title, rec.color, 13, bold=True)
+            _draw_text(painter, QRect(x, r.top() + 5, width, 24), rec.title, rec.color, 15, bold=True)
             meta = f"{rec.kind_text} · {rec.date_text} {rec.time_text} · {_human_size(rec.size)}"
-            _draw_text(painter, QRect(x, r.top() + 26, width, 20), meta, theme.TEXT_MUTED, 11)
+            _draw_text(painter, QRect(x, r.top() + 30, width, 22), meta, theme.TEXT_MUTED, 13)
         else:
             event = payload
-            thumb = QRect(r.left() + 10, r.top() + 8, 96, 54)
-            painter.fillRect(thumb, QColor("#243040"))
-            _draw_text(painter, thumb, "无图", theme.TEXT_MUTED, 12, align=Qt.AlignmentFlag.AlignHCenter)
-            x = thumb.right() + 12
-            width = max(0, r.right() - x - 74)
-            _draw_text(painter, QRect(x, r.top() + 10, 14, 22), "●", event.color, 10)
-            _draw_text(painter, QRect(x + 16, r.top() + 10, width - 16, 22),
-                       event.title, theme.TEXT, 14, bold=True)
-            _draw_text(painter, QRect(x, r.top() + 35, width, 22), event.summary(), theme.TEXT_DIM, 12)
-            _draw_text(painter, QRect(r.right() - 70, r.top() + 10, 64, 22),
-                       event.time_text, theme.TEXT, 13, bold=True, align=Qt.AlignmentFlag.AlignRight)
-            _draw_text(painter, QRect(r.right() - 70, r.top() + 35, 64, 22),
-                       event.date_text, theme.TEXT_MUTED, 11, align=Qt.AlignmentFlag.AlignRight)
+            timestamp = event.ts.astimezone() if event.ts else None
+            x = r.left() + 14
+            width = max(0, r.right() - x - 80)
+            _draw_text(painter, QRect(x, r.top() + 10, 14, 22), "●", event.color, 11)
+            _draw_text(painter, QRect(x + 16, r.top() + 10, width - 16, 24),
+                       event.title, theme.TEXT, 16, bold=True)
+            _draw_text(painter, QRect(x, r.top() + 38, width, 22), event.summary(), theme.TEXT_DIM, 14)
+            _draw_text(painter, QRect(r.right() - 76, r.top() + 10, 70, 24),
+                       timestamp.strftime("%H:%M:%S") if timestamp else "--:--:--",
+                       theme.TEXT, 15, bold=True, align=Qt.AlignmentFlag.AlignRight)
+            _draw_text(painter, QRect(r.right() - 76, r.top() + 38, 70, 22),
+                       timestamp.strftime("%m-%d") if timestamp else "--",
+                       theme.TEXT_MUTED, 13, align=Qt.AlignmentFlag.AlignRight)
         painter.restore()
 
 
@@ -111,7 +115,12 @@ class RecordsPage(QWidget):
         self._records: list[Recording] = []
         self._tab = "events"
         self._recording_kind = "all"
+        self._event_category = "all"
         self._collapsed_days: set[str] = set()
+        self._collapsed_event_days: set[str] = set()
+        self._current_event: Event | None = None
+        self._selection_generation = 0
+        self._snapshot_pixmap: QPixmap | None = None
         self._current_record: Recording | None = None
         self._current_clip_name = "recording.mp4"
         self._loading = {"events": False, "recordings": False}
@@ -172,6 +181,25 @@ class RecordsPage(QWidget):
         tab.addStretch(1)
         root.addLayout(tab)
 
+        self.event_filter_row = QWidget()
+        event_filters = QHBoxLayout(self.event_filter_row)
+        event_filters.setContentsMargins(0, 0, 0, 0)
+        event_filters.setSpacing(8)
+        self._event_filter_group = QButtonGroup(self)
+        self._event_chips: dict[str, QPushButton] = {}
+        for key, label in CATEGORIES:
+            button = QPushButton(label)
+            button.setObjectName("Small")
+            button.setCheckable(True)
+            button.setChecked(key == "all")
+            button.setMinimumHeight(40)
+            button.clicked.connect(lambda _checked=False, k=key: self._set_event_category(k))
+            self._event_filter_group.addButton(button)
+            self._event_chips[key] = button
+            event_filters.addWidget(button)
+        event_filters.addStretch(1)
+        root.addWidget(self.event_filter_row)
+
         body = QHBoxLayout()
         body.setSpacing(16)
 
@@ -208,9 +236,11 @@ class RecordsPage(QWidget):
         self.record_filter_row.hide()
         left_lay.addWidget(self.record_filter_row)
 
-        self.events_list = EventList()
+        self.events_list = QListWidget()
+        self.events_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.events_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.events_list.setItemDelegate(_ListDelegate(self, False, self.events_list))
-        self.events_list.selected.connect(self._on_event_selected)
+        self.events_list.itemClicked.connect(self._on_events_item_clicked)
         left_lay.addWidget(self.events_list, 1)
 
         self.recordings_list = QListWidget()
@@ -225,7 +255,7 @@ class RecordsPage(QWidget):
 
         self.empty = QLabel("暂无数据")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty.setStyleSheet(f"color:{theme.TEXT_MUTED};font-size:13px;")
+        self.empty.setStyleSheet(f"color:{theme.TEXT_MUTED};font-size:15px;")
         left_lay.addWidget(self.empty)
         body.addWidget(left_card)
 
@@ -235,22 +265,89 @@ class RecordsPage(QWidget):
         op = QHBoxLayout()
         self.play_title = QLabel("详情")
         self.play_title.setObjectName("PageSub")
-        op.addWidget(self.play_title)
-        op.addStretch(1)
+        self.play_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        op.addWidget(self.play_title, 1)
+
+        self.btn_event_details = QPushButton("查看详情")
+        self.btn_event_details.setObjectName("Small")
+        self.btn_event_details.setCheckable(True)
+        self.btn_event_details.setStyleSheet("min-height:40px;")
+        self.btn_event_details.clicked.connect(self._toggle_event_details)
+        self.btn_event_details.hide()
+        op.addWidget(self.btn_event_details)
+
+        self.btn_play = QPushButton("▶  播放")
+        self.btn_play.setObjectName("Small")
+        self.btn_play.setStyleSheet("min-height:40px;")
+        self.btn_play.setEnabled(False)
+        self.btn_play.clicked.connect(self._toggle)
+        op.addWidget(self.btn_play)
+
         self.btn_open = QPushButton("用系统播放器打开")
         self.btn_open.setObjectName("Small")
+        self.btn_open.setStyleSheet("min-height:40px;")
         self.btn_open.setEnabled(False)
         self.btn_open.clicked.connect(self._open_external)
         op.addWidget(self.btn_open)
         right.addLayout(op)
 
+        self.media_error = QLabel()
+        self.media_error.setTextFormat(Qt.TextFormat.PlainText)
+        self.media_error.setWordWrap(True)
+        self.media_error.setStyleSheet(f"color:{theme.CRIT};font-size:14px;")
+        self.media_error.hide()
+        right.addWidget(self.media_error)
+
+        self._right_layout = right
+        self.event_details, details_frame = card(spacing=0, margins=(14, 12, 14, 12))
+        self._event_details_scroll = QScrollArea()
+        self._event_details_scroll.setWidgetResizable(True)
+        self._event_details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._event_details_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        details_content = QWidget()
+        details_layout = QVBoxLayout(details_content)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(8)
+        self.event_title = QLabel()
+        self.event_title.setWordWrap(True)
+        self.event_title.setTextFormat(Qt.TextFormat.PlainText)
+        self.event_title.setStyleSheet("font-size:20px;font-weight:600;")
+        self.event_meta = QLabel()
+        self.event_summary = QLabel()
+        self.event_fields = QLabel()
+        self.event_media_hint = QLabel("此事件没有关联图片或录像")
+        for label in (self.event_meta, self.event_summary, self.event_fields, self.event_media_hint):
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:14px;")
+        details_layout.addWidget(self.event_title)
+        details_layout.addWidget(self.event_meta)
+        details_layout.addWidget(self.event_summary)
+        details_layout.addWidget(self.event_fields)
+        details_layout.addWidget(self.event_media_hint)
+        details_layout.addStretch(1)
+        self._event_details_scroll.setWidget(details_content)
+        details_frame.addWidget(self._event_details_scroll)
+        self.event_details.hide()
+        right.addWidget(self.event_details)
+
         self.video_stack = QStackedWidget()
         self.video_placeholder = QLabel("请选择记录")
         self.video_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_placeholder.setWordWrap(True)
+        self.video_placeholder.setTextFormat(Qt.TextFormat.PlainText)
         self.video_placeholder.setStyleSheet(
             f"color:{theme.TEXT_DIM};background:#05070A;border-radius:10px;padding:24px;"
         )
         self.video_stack.addWidget(self.video_placeholder)
+        self.event_snapshot = QLabel()
+        self.event_snapshot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.event_snapshot.setMinimumSize(1, 1)
+        self.event_snapshot.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.event_snapshot.installEventFilter(self)
+        self.event_snapshot.setStyleSheet("background:#05070A;border-radius:10px;")
+        self.video_stack.addWidget(self.event_snapshot)
         right.addWidget(self.video_stack, 1)
 
         if HAVE_MULTIMEDIA:
@@ -265,13 +362,6 @@ class RecordsPage(QWidget):
             self.video.videoSink().videoFrameChanged.connect(self._on_video_frame)
         else:
             self.player = None
-
-        self.btn_play = QPushButton("▶  播放")
-        self.btn_play.setObjectName("Ghost")
-        self.btn_play.setFixedHeight(52)
-        self.btn_play.setEnabled(False)
-        self.btn_play.clicked.connect(self._toggle)
-        right.addWidget(self.btn_play)
 
         body.addLayout(right, 1)
         root.addLayout(body, 1)
@@ -336,6 +426,8 @@ class RecordsPage(QWidget):
         self._thumb_timer.stop()
         self._events = []
         self._records = []
+        self._collapsed_event_days.clear()
+        self._current_event = None
         self._dirty = {"events": False, "recordings": False}
         self.events_list.clear()
         self.recordings_list.clear()
@@ -345,6 +437,7 @@ class RecordsPage(QWidget):
         self._auto_select_pending = True
         self._has_selection = False
         self._sync_record_filter_labels()
+        self._sync_event_filter_labels()
         self._update_subtitle()
         self._update_empty()
 
@@ -363,9 +456,17 @@ class RecordsPage(QWidget):
         self._schedule_thumbnails()
 
     def _on_events(self, events: list[Event]) -> None:
-        self._events = events
+        self._events = sorted(
+            events, key=lambda event: event.ts.timestamp() if event.ts else float("-inf"),
+            reverse=True,
+        )
+        self._sync_event_filter_labels()
         self._dirty["events"] = True
         if self._tab == "events":
+            if self._current_event not in self._filtered_events():
+                self._current_event = None
+                self._has_selection = False
+                self._auto_select_pending = True
             self._update_subtitle()
             self._update_empty()
             self._render_current()
@@ -386,6 +487,7 @@ class RecordsPage(QWidget):
         if tab == self._tab:
             return
         self._tab = tab
+        self._current_event = None
         self._auto_select_pending = True
         self._has_selection = False
         self.play_title.setText("详情")
@@ -395,6 +497,7 @@ class RecordsPage(QWidget):
         self.events_list.setVisible(tab == "events")
         self.recordings_list.setVisible(tab == "recordings")
         self.record_filter_row.setVisible(tab == "recordings")
+        self.event_filter_row.setVisible(tab == "events")
         self.left_title.setText("事件" if tab == "events" else "录像")
         self._update_subtitle()
         self._update_empty()
@@ -405,6 +508,35 @@ class RecordsPage(QWidget):
             self._schedule_thumbnails()
             if self._loaded[tab]:
                 self._select_default()
+
+    def _set_event_category(self, category: str) -> None:
+        if category == self._event_category:
+            return
+        self._event_category = category
+        self._event_chips[category].setChecked(True)
+        self._current_event = None
+        self._has_selection = False
+        self._auto_select_pending = True
+        self.play_title.setText("详情")
+        self._reset_player("正在载入记录…" if not self._loaded["events"]
+                           else self._event_empty_message())
+        self._dirty["events"] = True
+        self._render_current()
+        self._update_subtitle()
+        self._update_empty()
+        self._select_default()
+
+    def _sync_event_filter_labels(self) -> None:
+        for key, label in CATEGORIES:
+            count = len(self._events) if key == "all" else sum(
+                event.category == key for event in self._events
+            )
+            self._event_chips[key].setText(f"{label} {count}")
+
+    def _filtered_events(self) -> list[Event]:
+        if self._event_category == "all":
+            return self._events
+        return [event for event in self._events if event.category == self._event_category]
 
     def _set_recording_kind(self, kind: str) -> None:
         if kind not in ("all", "event", "continuous"):
@@ -442,11 +574,26 @@ class RecordsPage(QWidget):
         self._dirty[self._tab] = False
         if self._tab == "events":
             self.events_list.clear()
-            for event in self._events:
-                item = QListWidgetItem()
-                item.setData(Qt.ItemDataRole.UserRole, event)
-                item.setSizeHint(QSize(0, 76))
-                self.events_list.addItem(item)
+            groups: OrderedDict[str, list[Event]] = OrderedDict()
+            for event in self._filtered_events():
+                day = _event_day(event)
+                groups.setdefault(day, []).append(event)
+            for day, events in groups.items():
+                header = QListWidgetItem()
+                header.setData(Qt.ItemDataRole.UserRole, {
+                    "type": "group", "day": day, "count": len(events),
+                })
+                header.setSizeHint(QSize(0, 40))
+                self.events_list.addItem(header)
+                if day in self._collapsed_event_days:
+                    continue
+                for event in events:
+                    item = QListWidgetItem()
+                    item.setData(Qt.ItemDataRole.UserRole, event)
+                    item.setSizeHint(QSize(0, 70))
+                    self.events_list.addItem(item)
+                    if event == self._current_event:
+                        self.events_list.setCurrentItem(item)
             return
         records = self._filtered_records()
         groups: OrderedDict[str, list[Recording]] = OrderedDict()
@@ -458,14 +605,14 @@ class RecordsPage(QWidget):
         for day, items in groups.items():
             header = QListWidgetItem()
             header.setData(Qt.ItemDataRole.UserRole, {"type": "group", "day": day, "count": len(items)})
-            header.setSizeHint(QSize(0, 30))
+            header.setSizeHint(QSize(0, 34))
             self.recordings_list.addItem(header)
             if day in self._collapsed_days:
                 continue
             for rec in items:
                 item = QListWidgetItem()
                 item.setData(Qt.ItemDataRole.UserRole, {"type": "record", "day": day, "record": rec})
-                item.setSizeHint(QSize(0, 50))
+                item.setSizeHint(QSize(0, 56))
                 self.recordings_list.addItem(item)
         self._schedule_thumbnails()
 
@@ -480,6 +627,11 @@ class RecordsPage(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._schedule_thumbnails()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.event_snapshot and event.type() == QEvent.Type.Resize:
+            self._resize_event_snapshot()
+        return super().eventFilter(watched, event)
 
     def _load_visible_thumbnails(self) -> None:
         if self._tab != "recordings" or not self.recordings_list.isVisible():
@@ -517,7 +669,7 @@ class RecordsPage(QWidget):
             return
         self._thumb_pending.discard(path)
         self._thumb_cache[path] = pixmap.scaled(
-            72, 40, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation
+            78, 44, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation
         )
         self.recordings_list.viewport().update()
         self._schedule_thumbnails()
@@ -532,8 +684,8 @@ class RecordsPage(QWidget):
 
     def _update_empty(self) -> None:
         if self._tab == "events":
-            shown = len(self._events)
-            self.empty.setText("暂无事件")
+            shown = len(self._filtered_events())
+            self.empty.setText(self._event_empty_message())
         else:
             shown = len(self._filtered_records())
             self.empty.setText("暂无录像")
@@ -552,7 +704,8 @@ class RecordsPage(QWidget):
             self.sub.setText("等待载入")
             return
         if self._tab == "events":
-            self.sub.setText(f"事件 {len(self._events)} 条")
+            label = dict(CATEGORIES)[self._event_category]
+            self.sub.setText(f"最近载入 {len(self._events)} 条 · {label} {len(self._filtered_events())} 条")
             return
         shown = len(self._filtered_records())
         label = {
@@ -562,17 +715,29 @@ class RecordsPage(QWidget):
         }[self._recording_kind]
         self.sub.setText(f"录像 {shown} 条 · {label}")
 
+    def _event_empty_message(self) -> str:
+        return {
+            "all": "暂无事件",
+            "intrusion": "暂无安全事件",
+            "access": "暂无出入记录",
+            "package": "暂无快递事件",
+            "system": "暂无系统事件",
+        }[self._event_category]
+
     def _select_default(self) -> None:
-        if not self._active or not self._auto_select_pending:
+        if not self._active or not self._auto_select_pending or not self._loaded[self._tab]:
             return
         self._auto_select_pending = False
         if self._tab == "events":
-            item = self.events_list.item(0)
-            if item is not None:
-                self.events_list.setCurrentItem(item)
-                self._on_event_selected(item.data(Qt.ItemDataRole.UserRole))
-                return
-            message = "暂无事件"
+            for index in range(self.events_list.count()):
+                item = self.events_list.item(index)
+                event = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(event, Event):
+                    self.events_list.setCurrentItem(item)
+                    self._on_event_selected(event)
+                    return
+            message = ("展开日期分组查看事件" if self._filtered_events()
+                       else self._event_empty_message())
         else:
             for index in range(self.recordings_list.count()):
                 item = self.recordings_list.item(index)
@@ -585,15 +750,120 @@ class RecordsPage(QWidget):
         self.play_title.setText("详情")
         self._reset_player(message)
 
+    def _on_events_item_clicked(self, item: QListWidgetItem) -> None:
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(payload, Event):
+            self._on_event_selected(payload)
+        elif isinstance(payload, dict) and payload.get("type") == "group":
+            day = payload["day"]
+            if day in self._collapsed_event_days:
+                self._collapsed_event_days.remove(day)
+            else:
+                self._collapsed_event_days.add(day)
+            self._dirty["events"] = True
+            self._render_current()
+
+    def _matching_fingerprint_snapshot(self, event: Event) -> str | None:
+        finger_id = event.detail.get("finger_id")
+        if finger_id is None or event.ts is None:
+            return None
+        matches = []
+        for candidate in self._events:
+            if (
+                candidate.kind != "door.opened"
+                or candidate.raw.get("source") != "finger"
+                or not candidate.snapshot
+            ):
+                continue
+            if str(candidate.detail.get("user_id")) != str(finger_id) or candidate.ts is None:
+                continue
+            try:
+                delta = abs((candidate.ts - event.ts).total_seconds())
+            except TypeError:
+                continue
+            if delta <= 10:
+                matches.append((delta, candidate.snapshot))
+        return min(matches, default=(None, None))[1]
+
     def _on_event_selected(self, event: Event) -> None:
         self._auto_select_pending = False
         self._has_selection = True
         self._current_record = None
-        self.play_title.setText(f"{event.title} · {event.date_text} {event.time_text}")
+        self._current_event = event
+        self.play_title.setText(event.title)
         if event.clip:
             self._play_clip(event.clip)
         else:
             self._reset_player("此事件没有录像")
+        self.event_title.setText(event.title)
+        timestamp = (event.ts.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                     if event.ts else "未知日期")
+        self.event_meta.setText(f"{dict(CATEGORIES)[event.category]} · {timestamp}")
+        self.event_summary.setText(event.summary())
+        self.event_fields.setText("\n".join(f"{key}：{value}" for key, value in event.detail_rows()))
+        self._event_details_scroll.verticalScrollBar().setValue(0)
+        fingerprint_preview = event.kind == "finger.match" and not event.snapshot
+        fingerprint_snapshot = (
+            self._matching_fingerprint_snapshot(event) if fingerprint_preview else None
+        )
+        has_media = bool(event.clip or event.snapshot or fingerprint_preview)
+        self.event_media_hint.setVisible(not has_media)
+        self.event_details.setMinimumHeight(120 if has_media else 145)
+        self.event_details.setMaximumHeight(120 if has_media else 16777215)
+        self._right_layout.setStretchFactor(self.event_details, 0 if has_media else 1)
+        self.event_details.setVisible(not has_media)
+        self.btn_event_details.setVisible(has_media)
+        self.video_stack.setVisible(has_media)
+        self.btn_open.setVisible(bool(event.clip))
+        self.btn_play.setVisible(bool(event.clip))
+        self.event_snapshot.setToolTip("")
+        if event.snapshot and not event.clip:
+            self.video_placeholder.setText("正在载入快照…")
+            self._load_event_snapshot(event.snapshot)
+        elif fingerprint_preview and not event.clip:
+            if fingerprint_snapshot:
+                self.video_placeholder.setText("正在载入识别抓拍…")
+                self.event_snapshot.setToolTip("同次开锁抓拍")
+                self._load_event_snapshot(fingerprint_snapshot)
+            else:
+                self.video_placeholder.setText("正在载入当前门口画面…")
+                self.event_snapshot.setToolTip("当前门口画面；该识别事件未附历史抓拍")
+                self._load_event_snapshot(self._api.snapshot_url(), is_url=True)
+
+    def _toggle_event_details(self, checked: bool) -> None:
+        self.event_details.setVisible(checked)
+        self.btn_event_details.setText("收起详情" if checked else "查看详情")
+
+    def _load_event_snapshot(self, path: str, *, is_url: bool = False) -> None:
+        generation = self._selection_generation
+
+        def failure(message: str) -> None:
+            if generation != self._selection_generation:
+                return
+            log.warning("事件快照读取失败 %s: %s", path, message)
+            self.video_placeholder.setText(f"快照读取失败：{message}")
+            self.video_stack.setCurrentWidget(self.video_placeholder)
+
+        def success(data: bytes) -> None:
+            if generation != self._selection_generation:
+                return
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(data):
+                failure("图片格式无效")
+                return
+            self._snapshot_pixmap = pixmap
+            self.video_stack.setCurrentWidget(self.event_snapshot)
+            self._resize_event_snapshot()
+
+        fetch = self._api.get_bytes_url if is_url else self._api.get_bytes
+        fetch(path, on_ok=success, on_err=failure)
+
+    def _resize_event_snapshot(self) -> None:
+        if self._snapshot_pixmap is not None:
+            self.event_snapshot.setPixmap(self._snapshot_pixmap.scaled(
+                self.event_snapshot.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
 
     def _on_recordings_item_clicked(self, item: QListWidgetItem) -> None:
         payload = item.data(Qt.ItemDataRole.UserRole)
@@ -612,6 +882,7 @@ class RecordsPage(QWidget):
             return
         self._auto_select_pending = False
         self._has_selection = True
+        self._current_event = None
         self._current_record = rec
         self.play_title.setText(f"{rec.title} · {rec.date_text} {rec.time_text}")
         self._play_clip(rec.path)
@@ -636,6 +907,17 @@ class RecordsPage(QWidget):
             self.btn_play.setText("▶  播放")
 
     def _reset_player(self, message: str) -> None:
+        self._selection_generation += 1
+        self._snapshot_pixmap = None
+        self.event_snapshot.clear()
+        self.event_details.hide()
+        self.btn_event_details.setChecked(False)
+        self.btn_event_details.setText("查看详情")
+        self.btn_event_details.hide()
+        self.media_error.hide()
+        self.video_stack.show()
+        self.btn_open.show()
+        self.btn_play.show()
         self._retry_timer.stop()
         self._playback_retries = 0
         self._awaiting_video = False
@@ -684,13 +966,17 @@ class RecordsPage(QWidget):
         if not self._external_url:
             return
         target = Path(os.getenv("XDG_RUNTIME_DIR", "/tmp")) / self._current_clip_name
+        self.media_error.hide()
 
         def save(data: bytes) -> None:
             target.write_bytes(data)
             subprocess.Popen(["xdg-open", str(target)])
 
-        self._api.get_bytes_url(self._external_url, on_ok=save,
-                                on_err=lambda m: self.play_title.setText(f"下载失败：{m}"))
+        self._api.get_bytes_url(self._external_url, on_ok=save, on_err=self._on_download_error)
+
+    def _on_download_error(self, message: str) -> None:
+        self.media_error.setText(f"下载失败：{message}")
+        self.media_error.show()
 
     def _on_player_error(self, *_args) -> None:
         if HAVE_MULTIMEDIA and self.player is not None and self._external_url:
@@ -700,15 +986,30 @@ class RecordsPage(QWidget):
             if (self._active and self.player.error() == QMediaPlayer.Error.FormatError
                     and self._playback_retries < 15):
                 self._playback_retries += 1
-                self.video_placeholder.setText(f"录像暂时无法播放，正在重试（{self._playback_retries}/15）")
+                self.video_placeholder.setText(
+                    f"录像暂时无法播放，正在重试（{self._playback_retries}/15）\n"
+                    f"{self.player.errorString()}"
+                )
                 self.play_title.setText(f"播放失败：{self.player.errorString()}，正在重试")
                 self._retry_timer.start()
                 return
-            self.video_placeholder.setText("播放失败，可用系统播放器打开")
+            self.video_placeholder.setText(
+                f"播放失败：{self.player.errorString()}\n可用系统播放器打开"
+            )
             self.play_title.setText(f"播放失败：{self.player.errorString()}（可用系统播放器打开）")
 
     def play_event(self, event: Event) -> None:
         self._set_tab("events")
+        if self._event_category not in ("all", event.category):
+            self._set_event_category(event.category)
+        self._collapsed_event_days.discard(_event_day(event))
+        self._dirty["events"] = True
+        self._render_current()
+        for index in range(self.events_list.count()):
+            item = self.events_list.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) == event:
+                self.events_list.setCurrentItem(item)
+                break
         self._on_event_selected(event)
 
     def stop(self) -> None:
@@ -726,6 +1027,19 @@ def _group_day(record: Recording) -> str:
         if len(day) == 8 and day.isdigit():
             return f"{day[:4]}-{day[4:6]}-{day[6:8]}"
     return "未知日期"
+
+
+def _event_day(event: Event) -> str:
+    return event.ts.astimezone().strftime("%Y-%m-%d") if event.ts else "未知日期"
+
+
+def _event_day_label(day: str) -> str:
+    today = datetime.now().date()
+    if day == today.isoformat():
+        return "今天"
+    if day == (today - timedelta(days=1)).isoformat():
+        return "昨天"
+    return day
 
 
 def _human_size(size: int) -> str:

@@ -56,7 +56,7 @@ class ReplayPage(QWidget):
         left_lay.addWidget(self.list, 1)
         self.empty = QLabel("暂无录像")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty.setStyleSheet(f"color:{theme.TEXT_MUTED};font-size:13px;")
+        self.empty.setStyleSheet(f"color:{theme.TEXT_MUTED};font-size:15px;")
         left_lay.addWidget(self.empty)
         root.addWidget(left_card)
 
@@ -114,7 +114,7 @@ class ReplayPage(QWidget):
         bar.addWidget(self.btn_play)
 
         self.position = QLabel("00:00 / 00:00")
-        self.position.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:13px;")
+        self.position.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:15px;")
         bar.addWidget(self.position)
         bar.addStretch(1)
 
@@ -168,9 +168,9 @@ class ReplayPage(QWidget):
         info = QVBoxLayout()
         info.setSpacing(1)
         t = QLabel(ev.title)
-        t.setStyleSheet(f"font-size:13px;font-weight:600;color:{theme.TEXT};")
+        t.setStyleSheet(f"font-size:15px;font-weight:600;color:{theme.TEXT};")
         d = QLabel(ev.time_text)
-        d.setStyleSheet(f"font-size:11px;color:{theme.TEXT_MUTED};")
+        d.setStyleSheet(f"font-size:15px;color:{theme.TEXT_MUTED};")
         info.addWidget(t)
         info.addWidget(d)
         lay.addLayout(info, 1)

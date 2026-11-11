@@ -46,6 +46,63 @@ class ServoDriverTests(unittest.TestCase):
         self.assertIsNone(self.driver.error)
         self.assertEqual((self.channel / "enable").read_text().strip(), "1")
 
+    def test_initialization_sets_period_before_other_writes_for_new_channel(self):
+        original_write = self.driver._write
+
+        def kernel_write(path, value):
+            period = int((self.channel / "period").read_text())
+            if period == 0 and path.name != "period":
+                raise LockDriverError("Invalid argument: period is zero")
+            original_write(path, value)
+
+        with patch.object(self.driver, "_write", side_effect=kernel_write) as write:
+            self.driver._prepare()
+
+        self.assertEqual(write.call_args_list, [
+            call(self.channel / "period", 20_000_000),
+            call(self.channel / "enable", 0),
+            call(self.channel / "duty_cycle", 0),
+            call(self.channel / "polarity", "normal"),
+        ])
+        self.assertTrue(self.driver._ready)
+
+    def test_initialization_disables_and_clears_existing_duty_before_shorter_period(self):
+        (self.channel / "period").write_text("40000000")
+        (self.channel / "duty_cycle").write_text("30000000")
+        (self.channel / "enable").write_text("1")
+        (self.channel / "polarity").write_text("inversed")
+        original_write = self.driver._write
+
+        def kernel_write(path, value):
+            if path.name == "period" and int((self.channel / "duty_cycle").read_text()) > value:
+                raise LockDriverError("Invalid argument: duty exceeds period")
+            if path.name == "polarity" and (self.channel / "enable").read_text().strip() != "0":
+                raise LockDriverError("PWM still enabled")
+            original_write(path, value)
+
+        with patch.object(self.driver, "_write", side_effect=kernel_write) as write:
+            self.driver._prepare()
+
+        self.assertEqual(write.call_args_list, [
+            call(self.channel / "enable", 0),
+            call(self.channel / "duty_cycle", 0),
+            call(self.channel / "polarity", "normal"),
+            call(self.channel / "period", 20_000_000),
+        ])
+        self.assertTrue(self.driver._ready)
+
+    def test_unreadable_or_invalid_period_is_reported(self):
+        with patch.object(Path, "read_text", side_effect=OSError("read failed")):
+            with self.assertRaisesRegex(LockDriverError, "period.*read failed"):
+                self.driver._prepare()
+        self.assertIn("period", self.driver.status()["error"])
+        self.assertFalse(self.driver._ready)
+
+        (self.channel / "period").write_text("not-a-number")
+        with self.assertRaisesRegex(LockDriverError, "period"):
+            self.driver._prepare()
+        self.assertFalse(self.driver._ready)
+
     def test_permission_denied_tells_user_how_to_authorize(self):
         with patch("pathlib.Path.write_text", side_effect=PermissionError("denied")):
             with self.assertRaisesRegex(LockDriverError, "install_pwm_access.sh"):
@@ -92,6 +149,7 @@ class ServoDriverTests(unittest.TestCase):
             driver.lock()
 
     def test_permission_error_has_the_failing_attribute(self):
+        (self.channel / "period").write_text("20000000")
         with patch.object(Path, "write_text", side_effect=PermissionError("Permission denied")):
             with self.assertRaisesRegex(LockDriverError, "enable.*Permission denied"):
                 self.driver.lock()

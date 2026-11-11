@@ -12,6 +12,8 @@
 * **预览只编码一次**：预览帧直接复用环形缓冲里已缩好的 JPEG，
   100 个客户端和 1 个客户端 CPU 一样。
 * **相机异常自动重启**：USB 摄像头热插拔/掉线很常见，捕获 5 次失败就重开。
+* **无界面时暂停**（VISION_PAUSE_WITHOUT_UI=1）：界面心跳超时、无预览、无录像时
+  释放相机、停止推理；进程、HTTP 与已加载的模型保留，界面回来后秒级恢复。
 
 运行：
     python -m vision.app            # 采集 + 检测 + 录像
@@ -32,11 +34,11 @@ import cv2
 import numpy as np
 
 from .config import Config
-from .detector import Detection, Detector, draw, scale_detections
+from .detector import Detection, Detector, draw, draw_detections, scale_detections
 from .events import EventBus
 from .recorder import ClipJob, ContinuousRecorder
 from .ring import Frame, RingBuffer, new_path
-from .rules import Rules
+from .rules import Rules, filter_package_detections
 
 logger = logging.getLogger("visiond")
 
@@ -125,6 +127,11 @@ class VisionService:
         self.preview_clients = 0
         self.fps = 0.0
         self.camera_device: str | None = None
+        self.paused = False
+        self._ui_lock = threading.Lock()
+        self._ui_clients: dict[str, float] = {}
+        # 启动后先给界面一个租期的时间连上来，避免刚启动就暂停
+        self._ui_grace_until = time.monotonic() + cfg.ui_lease_s
         self._stop = asyncio.Event()
 
         self.detector: Detector | None = None
@@ -167,20 +174,21 @@ class VisionService:
             try:
                 found = detector.detect(frame)
                 if label == "包裹":
-                    found = [d for d in found if d.name in self.cfg.package_class_names]
+                    allowed_names = self.cfg.package_class_names
                     self.package_detector_error = None
-                elif self.cfg.package_model_path:
-                    found = [d for d in found if d.name not in self.cfg.package_class_names]
-                if label == "人员":
+                else:
+                    allowed_names = self.cfg.person_class_names
+                    if not self.cfg.package_model_path:
+                        allowed_names += self.cfg.package_class_names
                     self.detector_error = None
-                detections.extend(found)
+                detections.extend(d for d in found if d.name in allowed_names)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("%s检测推理失败: %s", label, exc)
                 if label == "包裹":
                     self.package_detector_error = str(exc)
                 else:
                     self.detector_error = str(exc)
-        return detections
+        return filter_package_detections(detections, frame.shape[1], frame.shape[0], self.cfg)
 
     # ------------------------------------------------------------------
     async def run(self) -> None:
@@ -203,6 +211,48 @@ class VisionService:
         recorder = self._continuous_recorder
         return {"requested": requested, "active": bool(recorder and recorder.active)}
 
+    # ---- 界面心跳 ----
+    def ui_heartbeat(self, client: str, active: bool = True) -> None:
+        with self._ui_lock:
+            if active:
+                self._ui_clients[client] = time.monotonic()
+            else:
+                self._ui_clients.pop(client, None)
+
+    def ui_clients(self, now: float | None = None) -> int:
+        now = time.monotonic() if now is None else now
+        with self._ui_lock:
+            expired = [c for c, seen in self._ui_clients.items() if now - seen > self.cfg.ui_lease_s]
+            for client in expired:
+                del self._ui_clients[client]
+            return len(self._ui_clients)
+
+    def should_pause(self, now: float | None = None) -> bool:
+        if not self.cfg.pause_without_ui:
+            return False
+        now = time.monotonic() if now is None else now
+        if now < self._ui_grace_until or self.preview_clients > 0 or self.clips:
+            return False
+        with self._recording_lock:
+            if self._recording_requested or self._continuous_recorder is not None:
+                return False
+        return self.ui_clients(now) == 0
+
+    def _enter_pause(self, cap) -> None:  # noqa: ANN001
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+        self.camera_device = None
+        self.fps = 0.0
+        # 旧画面不能再当作"当前"快照或下次事件的 pre-roll
+        self.ring.clear()
+        self.preview_jpeg = b""
+        self.rules = Rules(self.cfg)
+        self.paused = True
+        logger.info("无界面连接，释放相机并暂停检测")
+
     # ------------------------------------------------------------------
     def _loop(self) -> None:
         cfg = self.cfg
@@ -213,6 +263,19 @@ class VisionService:
         last_dets = []
 
         while not self._stop.is_set():
+            if self.should_pause():
+                if not self.paused:
+                    self._enter_pause(cap)
+                    cap = None
+                    last_dets = []
+                time.sleep(0.2)
+                continue
+            if self.paused:
+                self.paused = False
+                frame_i = 0
+                t_last = time.monotonic()
+                logger.info("界面已连接，恢复检测")
+
             if cap is None:
                 try:
                     source = resolve_camera_source(cfg.source)
@@ -259,7 +322,10 @@ class VisionService:
             current_frame: Frame | None = None
             ok2, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, cfg.jpeg_quality])
             if ok2:
-                current_frame = Frame(now, jpg.tobytes(), small.shape[1], small.shape[0])
+                frame_dets = tuple(scale_detections(
+                    last_dets, (frame.shape[1], frame.shape[0]), (small.shape[1], small.shape[0]),
+                )) if last_dets else ()
+                current_frame = Frame(now, jpg.tobytes(), small.shape[1], small.shape[0], frame_dets)
                 self.ring.push(current_frame)
 
             self._sync_continuous_recording(current=current_frame, current_bgr=small)
@@ -273,9 +339,10 @@ class VisionService:
                         (frame.shape[1], frame.shape[0]),
                         (small.shape[1], small.shape[0]),
                     )
-                    preview = draw(preview, preview_dets, self.fps, [
+                    zones = [
                         ("doorstep", cfg.doorstep_poly), ("ground", cfg.ground_poly),
-                    ])
+                    ] if cfg.preview_show_zones else []
+                    preview = draw(preview, preview_dets, self.fps, zones)
                 ok3, pj = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 if ok3:
                     self.preview_jpeg = pj.tobytes()
@@ -365,7 +432,7 @@ class VisionService:
         latest = self.ring.latest()
         if latest is not None:
             with open(snap_path, "wb") as f:
-                f.write(latest.jpeg)
+                f.write(_annotated_jpeg(latest, self.cfg.jpeg_quality))
 
         job = ClipJob(
             clip_path, self.cfg.clip_size, self.cfg.fps,
@@ -400,6 +467,16 @@ class VisionService:
                 await asyncio.sleep(interval)
         finally:
             self.preview_clients -= 1
+
+
+def _annotated_jpeg(frame: Frame, quality: int) -> bytes:
+    if not frame.dets:
+        return frame.jpeg
+    img = cv2.imdecode(np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return frame.jpeg
+    ok, jpg = cv2.imencode(".jpg", draw_detections(img, frame.dets), [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return jpg.tobytes() if ok else frame.jpeg
 
 
 def _default_names() -> list[str]:

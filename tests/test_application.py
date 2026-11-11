@@ -112,6 +112,25 @@ class ApplicationTests(unittest.TestCase):
         with patch("application.urllib.request.urlopen", side_effect=OSError("down")):
             self.assertFalse(_can_reuse_existing_backend("http://localhost:8083"))
 
+    def test_paused_backend_is_reused_and_woken(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"ok":true,"paused":true,"ring":0,"camera":null,"detector":"rknn"}'
+        with patch("application.urllib.request.urlopen", return_value=response) as urlopen:
+            self.assertTrue(_can_reuse_existing_backend("http://localhost:8083"))
+        wake = urlopen.call_args_list[1].args[0]
+        self.assertEqual(wake.full_url, "http://localhost:8083/ui/heartbeat")
+        self.assertEqual(wake.get_method(), "POST")
+
+    def test_paused_backend_with_detector_error_is_not_reused(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"ok":true,"paused":true,"detector":"rknn","detector_error":"x"}'
+        with patch("application.urllib.request.urlopen", return_value=response):
+            self.assertFalse(_can_reuse_existing_backend("http://localhost:8083"))
+
     def test_reuse_rejects_backend_without_package_detector(self):
         response = Mock()
         response.__enter__ = Mock(return_value=response)

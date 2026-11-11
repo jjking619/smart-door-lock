@@ -10,18 +10,96 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, Qt, Signal, QTimer
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QSettings, QSize, Qt, Signal, QTimer
+from PySide6.QtGui import QDesktopServices, QKeySequence, QMouseEvent, QShortcut
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QScroller,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from . import theme
 from .api import ApiClient
-from .widgets import card, card_title, hline
+from .i18n import L, tr
+from .system_input import request_system_input_panel
+from .widgets import IconBadge, card, card_title, hline
+
+
+class SystemInputLineEdit(QLineEdit):
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        super().mouseReleaseEvent(event)
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.hasFocus()
+            and not self.isReadOnly()
+            and self.rect().contains(event.position().toPoint())
+        ):
+            # Some desktop styles only request the panel after the first click.
+            request_system_input_panel()
+
+
+class FingerprintListRow(QFrame):
+    def __init__(self, entry: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("FingerprintRow")
+        self.setProperty("selected", False)
+        self.setAccessibleName(
+            f"{entry.get('name') or '未登记模板'}，ID {entry.get('id', '--')}，"
+            f"{entry.get('finger') or '未填写手指备注'}"
+        )
+
+        registered = bool(entry.get("registered"))
+        color = theme.FEAT_FINGER if registered else theme.TEXT_MUTED
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(10)
+        layout.addWidget(IconBadge("finger", color, 34))
+
+        text = QVBoxLayout()
+        text.setSpacing(3)
+        heading = QHBoxLayout()
+        heading.setSpacing(8)
+        self.name_label = QLabel(entry.get("name") or "未登记模板")
+        self.name_label.setObjectName("FingerprintName")
+        self.name_label.setStyleSheet(
+            f"color:{theme.TEXT};font-size:15px;font-weight:600;"
+        )
+        heading.addWidget(self.name_label, 1)
+
+        self.id_label = QLabel(f"ID {entry.get('id', '--')}")
+        self.id_label.setObjectName("FingerprintId")
+        self.id_label.setStyleSheet(
+            f"color:{theme.TEXT_DIM};background:{theme.SURFACE_2};"
+            "border-radius:8px;padding:2px 7px;font-size:12px;"
+        )
+        heading.addWidget(self.id_label)
+        text.addLayout(heading)
+
+        self.note_label = QLabel(
+            entry.get("finger") or ("已登记 · 未填写备注" if registered else "未登记模板")
+        )
+        self.note_label.setObjectName("FingerprintNote")
+        self.note_label.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:13px;")
+        text.addWidget(self.note_label)
+        layout.addLayout(text, 1)
+
+        if not registered:
+            self.status_label = QLabel("未登记")
+            self.status_label.setObjectName("FingerprintStatus")
+            self.status_label.setStyleSheet(
+                f"color:{theme.WARN};background:rgba(242,179,61,0.12);"
+                "border-radius:8px;padding:3px 7px;font-size:12px;"
+            )
+            layout.addWidget(self.status_label)
+        else:
+            self.status_label = None
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
 
 class SettingsPage(QWidget):
@@ -34,48 +112,92 @@ class SettingsPage(QWidget):
         self._api = api
         self._settings = QSettings("doorlock", "doorui")
         self._fingerprint_connected = False
+        self._fingerprint_busy = False
+        self._fingerprint_loading = False
+        self._fingerprint_submitting = False
+        self._delete_confirmation: QFrame | None = None
+        self._delete_overlay: QFrame | None = None
+        self._delete_location: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        body = QWidget()
-        lay = QVBoxLayout(body)
-        lay.setContentsMargins(0, 0, 8, 0)
-        lay.setSpacing(14)
-
         title = QLabel("设置")
         title.setObjectName("PageTitle")
-        lay.addWidget(title)
+        outer.addWidget(title)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("SettingsTabs")
+        outer.addWidget(self.tabs, 1)
+        sections = []
+        for label in ("指纹管理", "连接与显示", "诊断与参数"):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            QScroller.grabGesture(scroll.viewport(), QScroller.ScrollerGestureType.TouchGesture)
+            body = QWidget()
+            section = QVBoxLayout(body)
+            section.setContentsMargins(0, 14, 8, 0)
+            section.setSpacing(14)
+            scroll.setWidget(body)
+            self.tabs.addTab(scroll, tr(label))
+            sections.append(section)
+        fp_section, display_section, diagnostics_section = sections
 
         # ---------------- 指纹管理 ----------------
         fp_card, fp_lay = card()
         fp_lay.addWidget(card_title("AS608 指纹管理"))
         self.fingerprint_status = QLabel("正在连接指纹模块…")
         self.fingerprint_status.setWordWrap(True)
-        self.fingerprint_status.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:13px;")
+        self.fingerprint_status.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:15px;")
         fp_lay.addWidget(self.fingerprint_status)
+        fp_section.addWidget(fp_card)
+
+        fp_columns = QHBoxLayout()
+        fp_columns.setSpacing(14)
+        list_card, list_lay = card()
+        list_header = QHBoxLayout()
+        list_header.addWidget(card_title("指纹列表"), 1)
+        self.btn_fingerprint_refresh = QPushButton("刷新")
+        self.btn_fingerprint_refresh.setObjectName("Ghost")
+        self.btn_fingerprint_refresh.setMinimumHeight(40)
+        self.btn_fingerprint_refresh.clicked.connect(self._refresh_fingerprint_module)
+        list_header.addWidget(self.btn_fingerprint_refresh)
+        list_lay.addLayout(list_header)
 
         self.fingerprint_list = QListWidget()
-        self.fingerprint_list.setMinimumHeight(120)
+        self.fingerprint_list.setObjectName("FingerprintList")
+        self.fingerprint_list.setMinimumSize(240, 200)
+        self.fingerprint_list.setSpacing(4)
+        self.fingerprint_list.setWordWrap(True)
         self.fingerprint_list.currentItemChanged.connect(self._on_fingerprint_selected)
+        list_lay.addWidget(self.fingerprint_list, 1)
+        self.btn_fingerprint_delete = QPushButton("删除选中")
+        self.btn_fingerprint_delete.setObjectName("Danger")
+        self.btn_fingerprint_delete.setMinimumHeight(44)
+        self.btn_fingerprint_delete.clicked.connect(self._delete_fingerprint)
+        self.btn_fingerprint_delete.setEnabled(False)
+        list_lay.addWidget(self.btn_fingerprint_delete)
+        fp_columns.addWidget(list_card, 3)
 
+        edit_card, edit_lay = card()
+        edit_card.setMinimumWidth(280)
+        edit_lay.addWidget(card_title("姓名与手指备注"))
         fp_form = QFormLayout()
-        fp_form.setHorizontalSpacing(20)
-        fp_form.setVerticalSpacing(8)
-        self.fingerprint_name = QLineEdit()
+        fp_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        fp_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        fp_form.setVerticalSpacing(10)
+        self.fingerprint_name = SystemInputLineEdit()
         self.fingerprint_name.setMaxLength(40)
         self.fingerprint_name.setPlaceholderText("例如：张三")
-        self.fingerprint_note = QLineEdit()
+        self.fingerprint_note = SystemInputLineEdit()
         self.fingerprint_note.setMaxLength(40)
         self.fingerprint_note.setPlaceholderText("例如：右手食指")
         fp_form.addRow("姓名", self.fingerprint_name)
         fp_form.addRow("手指备注", self.fingerprint_note)
-        fp_lay.addLayout(fp_form)
+        edit_lay.addLayout(fp_form)
 
-        fp_actions = QHBoxLayout()
+        fp_actions = QVBoxLayout()
+        fp_actions.setSpacing(10)
         self.btn_fingerprint_enroll = QPushButton("添加指纹")
         self.btn_fingerprint_enroll.setObjectName("Primary")
         self.btn_fingerprint_enroll.clicked.connect(self._enroll_fingerprint)
@@ -91,18 +213,21 @@ class SettingsPage(QWidget):
         self.btn_fingerprint_rename.clicked.connect(self._rename_fingerprint)
         self.btn_fingerprint_rename.setEnabled(False)
         fp_actions.addWidget(self.btn_fingerprint_rename)
-        self.btn_fingerprint_delete = QPushButton("删除选中")
-        self.btn_fingerprint_delete.setObjectName("Small")
-        self.btn_fingerprint_delete.clicked.connect(self._delete_fingerprint)
-        self.btn_fingerprint_delete.setEnabled(False)
-        fp_actions.addWidget(self.btn_fingerprint_delete)
-        self.btn_fingerprint_refresh = QPushButton("刷新")
-        self.btn_fingerprint_refresh.setObjectName("Small")
-        self.btn_fingerprint_refresh.clicked.connect(self.refresh_fingerprint)
-        fp_actions.addWidget(self.btn_fingerprint_refresh)
-        fp_lay.addLayout(fp_actions)
-        fp_lay.addWidget(self.fingerprint_list)
-        lay.addWidget(fp_card)
+        for button in (self.btn_fingerprint_enroll, self.btn_fingerprint_cancel,
+                       self.btn_fingerprint_rename):
+            button.setMinimumHeight(44)
+        edit_lay.addLayout(fp_actions)
+        edit_tip = QLabel("添加：填写信息后点击添加指纹。\n修改：先选中列表中的指纹，再保存备注。")
+        edit_tip.setWordWrap(True)
+        edit_tip.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:15px;")
+        edit_lay.addWidget(edit_tip)
+        edit_lay.addStretch(1)
+        fp_columns.addWidget(edit_card, 2)
+        fp_section.addLayout(fp_columns, 1)
+        self.fingerprint_feedback = QLabel("先选中列表中的指纹，再保存备注或删除；删除会移除模块中的指纹。")
+        self.fingerprint_feedback.setWordWrap(True)
+        self.fingerprint_feedback.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:15px;")
+        fp_section.addWidget(self.fingerprint_feedback)
 
         # ---------------- 连接 ----------------
         conn_card, conn_lay = card()
@@ -111,13 +236,21 @@ class SettingsPage(QWidget):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         form.setHorizontalSpacing(20)
         form.setVerticalSpacing(10)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
-        self.base_edit = QLineEdit(self._settings.value("base_url", api.base_url, str))
+        self.base_edit = SystemInputLineEdit(self._settings.value("base_url", api.base_url, str))
         self.base_edit.setPlaceholderText("http://127.0.0.1:8083")
         form.addRow("visiond 地址", self.base_edit)
 
-        self.token_edit = QLineEdit(self._settings.value("token", api.token, str))
+        self.token_edit = SystemInputLineEdit(self._settings.value("token", api.token, str))
         self.token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.token_edit.setInputMethodHints(
+            Qt.InputMethodHint.ImhHiddenText
+            | Qt.InputMethodHint.ImhSensitiveData
+            | Qt.InputMethodHint.ImhNoPredictiveText
+            | Qt.InputMethodHint.ImhNoAutoUppercase
+        )
         self.token_edit.setPlaceholderText("留空表示未启用鉴权")
         form.addRow("访问令牌", self.token_edit)
 
@@ -134,9 +267,10 @@ class SettingsPage(QWidget):
         conn_lay.addLayout(row)
 
         self.conn_hint = QLabel("")
-        self.conn_hint.setStyleSheet(f"color:{theme.TEXT_MUTED};font-size:12px;")
+        self.conn_hint.setWordWrap(True)
+        self.conn_hint.setStyleSheet(f"color:{theme.TEXT_MUTED};font-size:14px;")
         conn_lay.addWidget(self.conn_hint)
-        lay.addWidget(conn_card)
+        display_section.addWidget(conn_card)
 
         # ---------------- 显示 ----------------
         disp_card, disp_lay = card()
@@ -159,7 +293,8 @@ class SettingsPage(QWidget):
         q_row.addWidget(self.quality)
         q_row.addStretch(1)
         disp_lay.addLayout(q_row)
-        lay.addWidget(disp_card)
+        display_section.addWidget(disp_card)
+        display_section.addStretch(1)
 
         # ---------------- 后端只读参数 ----------------
         be_card, be_lay = card()
@@ -171,10 +306,11 @@ class SettingsPage(QWidget):
             "sudo systemctl restart visiond"
         )
         tip.setWordWrap(True)
-        tip.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:12px;line-height:150%;")
+        tip.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:14px;line-height:150%;")
         be_lay.addWidget(tip)
 
         grid = QFormLayout()
+        grid.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         grid.setVerticalSpacing(8)
         backend_rows = [
             ("采集源 VISION_SOURCE", "/dev/video0"),
@@ -189,10 +325,10 @@ class SettingsPage(QWidget):
         ]
         for label, value in backend_rows:
             v = QLabel(value)
-            v.setStyleSheet(f"color:{theme.TEXT};font-size:13px;")
+            v.setWordWrap(True)
+            v.setStyleSheet(f"color:{theme.TEXT};font-size:15px;")
             grid.addRow(label, v)
         be_lay.addLayout(grid)
-        lay.addWidget(be_card)
 
         # ---------------- 诊断 ----------------
         diag_card, diag_lay = card()
@@ -201,7 +337,7 @@ class SettingsPage(QWidget):
         self.diag.setWordWrap(True)
         self.diag.setStyleSheet(
             "font-family:'DejaVu Sans Mono','WenQuanYi Zen Hei Mono',monospace;"
-            f"color:{theme.TEXT_DIM};font-size:12px;"
+            f"color:{theme.TEXT_DIM};font-size:14px;"
         )
         diag_lay.addWidget(self.diag)
 
@@ -221,11 +357,9 @@ class SettingsPage(QWidget):
         d_row.addWidget(btn_recordings)
         d_row.addStretch(1)
         diag_lay.addLayout(d_row)
-        lay.addWidget(diag_card)
-
-        lay.addStretch(1)
-        scroll.setWidget(body)
-        outer.addWidget(scroll)
+        diagnostics_section.addWidget(diag_card)
+        diagnostics_section.addWidget(be_card)
+        diagnostics_section.addStretch(1)
         self._fingerprint_timer = QTimer(self)
         self._fingerprint_timer.setInterval(3000)
         self._fingerprint_timer.timeout.connect(self.refresh_fingerprint)
@@ -238,13 +372,67 @@ class SettingsPage(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         self._fingerprint_timer.stop()
+        self._close_delete_confirmation()
         super().hideEvent(event)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self._delete_confirmation is not None:
+            self._delete_confirmation.setGeometry(self.rect())
+
     def refresh_fingerprint(self) -> None:
-        self._api.fingerprint_health(self._on_fingerprint_health, self._on_fingerprint_error)
-        self._api.fingerprint_templates(
-            self._on_fingerprint_templates, lambda _message: None
+        if self._fingerprint_loading:
+            return
+        self._fingerprint_loading = True
+        self._update_fingerprint_buttons()
+
+        def finish() -> None:
+            self._fingerprint_loading = False
+            self._update_fingerprint_buttons()
+
+        def templates_ok(items: list[dict]) -> None:
+            self._on_fingerprint_templates(items)
+            finish()
+
+        def templates_error(message: str) -> None:
+            self._fingerprint_message(f"读取指纹列表失败：{message}", error=True)
+            finish()
+
+        def health_ok(status: dict) -> None:
+            self._on_fingerprint_health(status)
+            if self._fingerprint_connected:
+                self._api.fingerprint_templates(templates_ok, templates_error)
+            else:
+                finish()
+
+        def health_error(message: str) -> None:
+            self._on_fingerprint_error(message)
+            finish()
+
+        self._api.fingerprint_health(health_ok, health_error)
+
+    def _fingerprint_message(self, text: str, *, error: bool = False) -> None:
+        self.fingerprint_feedback.setText(text)
+        self.fingerprint_feedback.setStyleSheet(
+            f"color:{theme.CRIT if error else theme.TEXT_DIM};font-size:15px;"
         )
+
+    def _refresh_fingerprint_module(self) -> None:
+        self._fingerprint_submitting = True
+        self._fingerprint_message("正在刷新模块指纹列表…")
+        self._update_fingerprint_buttons()
+
+        def accepted(_data) -> None:
+            self._fingerprint_submitting = False
+            self._fingerprint_message("刷新请求已提交，正在读取模块…")
+            self.refresh_fingerprint()
+
+        def failed(message: str) -> None:
+            self._fingerprint_submitting = False
+            self._fingerprint_message(f"刷新失败：{message}", error=True)
+            self._update_fingerprint_buttons()
+
+        self._api.fingerprint_refresh(on_ok=accepted, on_err=failed)
 
     def _on_fingerprint_health(self, status: dict) -> None:
         if not isinstance(status, dict) or status.get("service") != "fingerprintd":
@@ -268,8 +456,13 @@ class SettingsPage(QWidget):
             text = f"AS608 离线：{status.get('error') or '等待串口设备'}"
             color = theme.WARN
         self.fingerprint_status.setText(text)
-        self.fingerprint_status.setStyleSheet(f"color:{color};font-size:13px;")
+        self.fingerprint_status.setStyleSheet(f"color:{color};font-size:15px;")
         busy = bool(status.get("action"))
+        self._fingerprint_busy = busy
+        if status.get("error"):
+            self._fingerprint_message(f"上次操作失败：{status['error']}", error=True)
+        elif status.get("notice"):
+            self._fingerprint_message(str(status["notice"]))
         self._fingerprint_timer.setInterval(800 if busy else 3000)
         self.btn_fingerprint_enroll.setEnabled(self._fingerprint_connected and not busy)
         self.btn_fingerprint_cancel.setVisible(status.get("action") == "enroll")
@@ -284,10 +477,12 @@ class SettingsPage(QWidget):
 
     def _fingerprint_unavailable(self, message: str) -> None:
         self._fingerprint_connected = False
+        self._fingerprint_busy = False
         self.fingerprint_status.setText(message)
-        self.fingerprint_status.setStyleSheet(f"color:{theme.CRIT};font-size:13px;")
+        self.fingerprint_status.setStyleSheet(f"color:{theme.CRIT};font-size:15px;")
         self.btn_fingerprint_enroll.setEnabled(False)
         self.btn_fingerprint_cancel.hide()
+        self._fingerprint_message(message, error=True)
         self._update_fingerprint_buttons()
 
     def _on_fingerprint_templates(self, items: list[dict]) -> None:
@@ -299,12 +494,15 @@ class SettingsPage(QWidget):
         selected_row = None
         for entry in items:
             if entry.get("registered"):
-                label = f"ID {entry['id']}  ·  {entry.get('name', '')}  ·  {entry.get('finger', '')}"
+                label = f"{entry.get('name', '')}  ·  ID {entry['id']}\n{entry.get('finger') or '未填写手指备注'}"
             else:
                 label = f"ID {entry['id']}  ·  未登记模板"
-            item = QListWidgetItem(label)
+            item = QListWidgetItem(tr(label))
             item.setData(Qt.ItemDataRole.UserRole, entry)
+            row = FingerprintListRow(entry)
+            item.setSizeHint(QSize(0, max(68, row.sizeHint().height())))
             self.fingerprint_list.addItem(item)
+            self.fingerprint_list.setItemWidget(item, row)
             if entry["id"] == selected_id:
                 selected_row = self.fingerprint_list.count() - 1
         if selected_row is not None:
@@ -313,6 +511,7 @@ class SettingsPage(QWidget):
             self.fingerprint_name.clear()
             self.fingerprint_note.clear()
         self.fingerprint_list.blockSignals(False)
+        self._sync_fingerprint_row_selection()
         self._update_fingerprint_buttons()
 
     def _on_fingerprint_selected(self, current, _previous) -> None:
@@ -320,14 +519,27 @@ class SettingsPage(QWidget):
         if entry:
             self.fingerprint_name.setText(entry.get("name", ""))
             self.fingerprint_note.setText(entry.get("finger", ""))
+        self._sync_fingerprint_row_selection()
         self._update_fingerprint_buttons()
+
+    def _sync_fingerprint_row_selection(self) -> None:
+        current = self.fingerprint_list.currentItem()
+        for index in range(self.fingerprint_list.count()):
+            item = self.fingerprint_list.item(index)
+            row = self.fingerprint_list.itemWidget(item)
+            if isinstance(row, FingerprintListRow):
+                row.set_selected(item is current)
 
     def _update_fingerprint_buttons(self) -> None:
         current = self.fingerprint_list.currentItem()
         entry = current.data(Qt.ItemDataRole.UserRole) if current else None
-        can_manage = bool(entry and entry.get("registered")) and self._fingerprint_connected
+        busy = self._fingerprint_busy or self._fingerprint_submitting
+        can_manage = bool(entry and entry.get("registered")) and self._fingerprint_connected and not busy
         self.btn_fingerprint_rename.setEnabled(can_manage)
-        self.btn_fingerprint_delete.setEnabled(can_manage)
+        self.btn_fingerprint_delete.setEnabled(bool(entry) and self._fingerprint_connected and not busy)
+        self.btn_fingerprint_enroll.setEnabled(self._fingerprint_connected and not busy)
+        self.btn_fingerprint_refresh.setEnabled(not busy and not self._fingerprint_loading)
+        self.btn_fingerprint_refresh.setText("刷新中…" if self._fingerprint_loading or busy else "刷新")
 
     def _enroll_fingerprint(self) -> None:
         name = self.fingerprint_name.text().strip()
@@ -359,6 +571,7 @@ class SettingsPage(QWidget):
         item = self.fingerprint_list.currentItem()
         entry = item.data(Qt.ItemDataRole.UserRole) if item else None
         if not entry or not entry.get("registered"):
+            self._fingerprint_message("请先选择已登记的指纹", error=True)
             return
         name = self.fingerprint_name.text().strip()
         if not name:
@@ -373,24 +586,108 @@ class SettingsPage(QWidget):
         )
 
     def _delete_fingerprint(self) -> None:
+        if self._delete_confirmation is not None:
+            self._delete_confirmation.raise_()
+            return
         item = self.fingerprint_list.currentItem()
         entry = item.data(Qt.ItemDataRole.UserRole) if item else None
-        if not entry or not entry.get("registered"):
+        if not entry:
+            self._fingerprint_message("请先选择要删除的指纹", error=True)
             return
-        answer = QMessageBox.question(
-            self,
-            "删除指纹",
-            f"确定删除 {entry.get('name')}（ID {entry['id']}）的模块指纹模板吗？此操作不可撤销。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        if entry.get("registered"):
+            confirmation = L(
+                f"确定删除 {entry.get('name')}（ID {entry['id']}）的模块指纹模板吗？此操作不可撤销。",
+                f"Delete the sensor fingerprint for {entry.get('name')} (ID {entry['id']})? "
+                "This cannot be undone.",
+            )
+        else:
+            confirmation = L(
+                f"确定删除未登记模板（ID {entry['id']}）吗？无法确认此指纹所属人员。"
+                "删除后该指纹将无法识别，且不可恢复。",
+                f"Delete unregistered template (ID {entry['id']})? Its owner is unknown. "
+                "This fingerprint will no longer be recognized. This cannot be undone.",
+            )
+        if self._delete_overlay is None:
+            self._delete_overlay = self._build_delete_confirmation()
+        overlay = self._delete_overlay
+        overlay.findChild(QLabel, "FingerprintDeleteMessage").setText(confirmation)
+        self._delete_location = int(entry["id"])
+        self._delete_confirmation = overlay
+        overlay.setGeometry(self.rect())
+        self.tabs.setEnabled(False)
+        overlay.show()
+        overlay.raise_()
+        overlay.findChild(QPushButton, "Ghost").setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _build_delete_confirmation(self) -> QFrame:
+        # Child overlay avoids native dialog stacking problems on kiosk/embedded Qt platforms.
+        overlay = QFrame(self)
+        overlay.setObjectName("FingerprintDeleteOverlay")
+        overlay.setStyleSheet(
+            "QFrame#FingerprintDeleteOverlay { background: rgba(0,0,0,180); }"
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        overlay.setGeometry(self.rect())
+        overlay_layout = QVBoxLayout(overlay)
+        overlay_layout.setContentsMargins(18, 18, 18, 18)
+        overlay_layout.addStretch(1)
+        panel, panel_layout = card(spacing=18, margins=(24, 24, 24, 24))
+        panel.setMaximumWidth(540)
+        panel_layout.addWidget(card_title(L("删除指纹", "Delete fingerprint")))
+        message = QLabel()
+        message.setObjectName("FingerprintDeleteMessage")
+        message.setTextFormat(Qt.TextFormat.PlainText)
+        message.setWordWrap(True)
+        message.setStyleSheet(f"font-size:18px;color:{theme.TEXT};")
+        panel_layout.addWidget(message)
+        actions = QHBoxLayout()
+        cancel = QPushButton(L("取消", "Cancel"))
+        cancel.setObjectName("Ghost")
+        cancel.setProperty("deleteAction", "cancel")
+        cancel.clicked.connect(self._close_delete_confirmation)
+        confirm = QPushButton(L("确认删除", "Confirm delete"))
+        confirm.setObjectName("Danger")
+        confirm.setProperty("deleteAction", "confirm")
+        confirm.clicked.connect(lambda: self._confirm_fingerprint_delete(self._delete_location))
+        actions.addWidget(cancel, 1)
+        actions.addWidget(confirm, 1)
+        panel_layout.addLayout(actions)
+        overlay_layout.addWidget(panel, 0, Qt.AlignmentFlag.AlignHCenter)
+        overlay_layout.addStretch(1)
+        escape = QShortcut(QKeySequence("Escape"), overlay)
+        escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        escape.activated.connect(self._close_delete_confirmation)
+        return overlay
+
+    def _close_delete_confirmation(self) -> None:
+        overlay = self._delete_confirmation
+        if overlay is None:
             return
-        self._api.fingerprint_delete(
-            entry["id"],
-            on_ok=lambda _data: self.refresh_fingerprint(),
-            on_err=lambda message: self.fingerprint_status.setText(f"删除失败：{message}"),
-        )
+        self._delete_confirmation = None
+        self._delete_location = None
+        overlay.hide()
+        self.tabs.setEnabled(True)
+        if self.isVisible():
+            self.btn_fingerprint_delete.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _confirm_fingerprint_delete(self, location: int | None) -> None:
+        if self._delete_confirmation is None or location is None:
+            return
+        self._close_delete_confirmation()
+        self._fingerprint_submitting = True
+        self._fingerprint_message("正在提交删除请求…")
+        self._update_fingerprint_buttons()
+
+        def accepted(_data) -> None:
+            self._fingerprint_submitting = False
+            self._fingerprint_message("删除请求已提交，等待模块确认…")
+            self.refresh_fingerprint()
+
+        def failed(message: str) -> None:
+            self._fingerprint_submitting = False
+            self._fingerprint_message(f"删除失败：{message}", error=True)
+            self._update_fingerprint_buttons()
+
+        self._api.fingerprint_delete(location, on_ok=accepted, on_err=failed)
 
     def _apply_connection(self) -> None:
         base = self.base_edit.text().strip() or "http://127.0.0.1:8083"

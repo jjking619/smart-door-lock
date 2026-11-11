@@ -89,8 +89,8 @@ class FingerprintServiceTests(unittest.TestCase):
         self.assertEqual(self.sensor.templates, [0, 1])
         self.assertEqual([item["id"] for item in self.service.templates()], [0, 1])
 
-    def test_delete_is_limited_to_managed_templates(self):
-        with self.assertRaisesRegex(ValueError, "只能删除"):
+    def test_delete_rejects_missing_template_and_removes_managed_template(self):
+        with self.assertRaisesRegex(ValueError, "未找到模块"):
             self.service.begin_delete(7)
 
         self.service._users[0] = {"name": "张三", "finger": "食指", "created_at": ""}
@@ -100,6 +100,45 @@ class FingerprintServiceTests(unittest.TestCase):
         self.assertEqual(self.sensor.templates, [])
         self.assertEqual(self.service._users, {})
         self.assertEqual(self.service._template_locations, [])
+        self.assertIn("指纹已删除", self.service.status()["notice"])
+
+    def test_delete_unregistered_template_removes_only_selected_location(self):
+        self.sensor.templates = [7, 9]
+        self.service._template_locations = [7, 9]
+        self.service.begin_delete(7)
+        self.assertEqual(self.service._commands.get_nowait(), ("delete", {"id": 7}))
+        self.service._delete(7)
+        self.assertEqual(self.sensor.templates, [9])
+        self.assertEqual(self.service._template_locations, [9])
+        self.assertEqual(self.service._users, {})
+        self.assertIn("未登记模板", self.service.status()["notice"])
+
+    def test_refresh_reads_hardware_and_updates_cached_list(self):
+        self.sensor.templates = [7, 9]
+        self.sensor.read_templates = Mock(return_value=OK)
+        self.sensor.count_templates = Mock(return_value=OK)
+        self.sensor.template_count = 2
+        self.service.begin_refresh()
+        self.assertEqual(self.service._commands.get_nowait(), ("refresh", {}))
+        self.service._refresh_templates()
+        self.sensor.read_templates.assert_called_once_with()
+        self.sensor.count_templates.assert_called_once_with()
+        self.assertEqual([item["id"] for item in self.service.templates()], [7, 9])
+        self.assertEqual(self.service.status()["template_count"], 2)
+        self.assertIsNone(self.service.status()["action"])
+        self.assertEqual(self.service.status()["notice"], "刷新完成")
+
+    def test_refresh_failure_does_not_replace_cached_list(self):
+        self.service._template_locations = [7]
+        self.sensor.read_templates = Mock(return_value=0x18)
+        with self.assertRaisesRegex(FingerprintOperationError, "FLASH"):
+            self.service._refresh_templates()
+        self.assertEqual(self.service._template_locations, [7])
+
+    def test_refresh_is_rejected_during_enrollment(self):
+        self.service._set_state(action="enroll")
+        with self.assertRaisesRegex(RuntimeError, "正在进行"):
+            self.service.begin_refresh()
 
     def test_delete_failure_to_save_metadata_keeps_sensor_and_ui_state_consistent(self):
         self.service._users[0] = {"name": "张三", "finger": "食指", "created_at": ""}
@@ -345,6 +384,26 @@ class FingerprintHttpTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/health")
         self.assertEqual(response.status, 200)
         self.assertNotIn("admin_configured", await response.json())
+
+    async def test_refresh_queues_a_hardware_operation(self):
+        self.service._set_state(connected=True)
+        response = await self.client.post("/refresh", json={})
+        self.assertEqual(response.status, 202)
+        self.assertEqual(self.service._commands.get_nowait(), ("refresh", {}))
+        response = await self.client.post("/refresh", json={})
+        self.assertEqual(response.status, 409)
+
+    async def test_refresh_offline_returns_error(self):
+        response = await self.client.post("/refresh", json={})
+        self.assertEqual(response.status, 409)
+        self.assertIn("未连接", (await response.json())["error"])
+
+    async def test_delete_unregistered_template_is_queued(self):
+        self.service._set_state(connected=True)
+        self.service._template_locations = [7]
+        response = await self.client.post("/delete", json={"id": 7})
+        self.assertEqual(response.status, 202)
+        self.assertEqual(self.service._commands.get_nowait(), ("delete", {"id": 7}))
 
 
 if __name__ == "__main__":

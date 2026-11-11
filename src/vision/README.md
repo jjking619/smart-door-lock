@@ -24,6 +24,27 @@ HTTP 控制接口为 `POST /recording`，JSON 请求体为 `{"on": true}` 或 `{
 启用 `VISION_TOKEN` 时需要按其他受保护接口的方式提供令牌。`/health` 的 `recording`
 字段分别报告请求状态和实际运行状态。
 
+## 事件录像中的检测框
+
+每帧入环形缓冲时附带当时的检测框（缓冲本身仍是原图，`/snapshot.jpg` 与在线录像不带框）。
+写事件片段 `data/clips/` 和事件快照 `data/snapshots/` 时把框画上：人员为蓝色、包裹为琥珀色，
+半透明填充 + 四角加粗 + 类别与置信度标签，回看时能直接定位目标。实时预览使用同一套样式。
+此功能上线前录制的片段没有框。
+
+## 无界面时暂停
+
+默认（`VISION_PAUSE_WITHOUT_UI=1`）界面关闭后 visiond 会释放摄像头、停止推理，进程、HTTP
+接口和已加载到 NPU 的模型保留，界面重新打开后约 1 s 恢复。判断"有人在用"的依据：
+
+* 界面每 5 s 发一次 `POST /ui/heartbeat {"client": "...", "active": true}`，
+  超过 `VISION_UI_LEASE_S`（默认 15 s）没有续租即视为已关闭；正常关闭时发送 `active: false` 立即释放；
+* 有客户端在看 `/stream`；
+* 在线录像开启中，或事件录像尚未写完。
+
+以上都不满足时暂停。**暂停期间入侵/快递检测、事件录像和 MQTT 告警都不工作**，
+`/snapshot.jpg` 返回 503（lockd 开锁抓拍会跳过），`/health` 的 `paused` 为 `true`。
+需要 7×24 安防时设 `VISION_PAUSE_WITHOUT_UI=0`。
+
 ## 规则为什么这样定
 
 **入侵检测：分层，不用"画面有变化"**
@@ -53,8 +74,10 @@ HTTP 控制接口为 `POST /recording`，JSON 请求体为 `{"on": true}` 或 `{
 启动时门口已存在的包裹也会在稳定后上报，进程重启后去重状态不会保留。
 建议调整相机角度，确保摄像头能看到包裹并尽量避免遮挡。
 
-默认使用两个模型顺序推理同一帧：`yolov5s-rk3576.rknn` 检测人员等 COCO 类别；
+默认使用两个模型顺序推理同一帧：`yolov5s-rk3576.rknn` 只保留人员检测结果；
 `parcel-yolov5n-rk3576-fp.rknn` 检测 `defect-parcel`、`good-parcel` 两类。
+实时预览只绘制人员和包裹的检测框，不显示其他类别的检测框；画面中的其他物体仍然可见。
+主模型本身仍推理 COCO 类别，筛选发生在推理之后，因此不会减少模型的推理量。
 包裹模型来自公开的 [包裹检测权重](https://github.com/Y47ya/parcels-object-detection-and-classification-Yolov5/tree/main/runs/detect/trainV4/weights)，
 已转换为 RK3576 的未量化 RKNN。COCO 的 `backpack`、`handbag`、`suitcase` 默认不会触发包裹事件。
 
@@ -67,8 +90,13 @@ cd /home/pi/smart-door-lock
 此时包裹候选默认改回 `suitcase,backpack,handbag`，不能识别普通纸箱。
 事件会落盘并显示在界面，可选 MQTT；不包含手机推送。部署后检查 `/health` 的 `detector`
 和 `package_detector` 均为 `rknn`，且 `detector_error`、`package_detector_error` 均为空。
-两个模型顺序运行会降低帧率，包裹模型在非包裹样例上也有误检，务必用真实门口、空场景、
-白天和夜间验证；全画面判断可能增加误报，必要时可缩小 ROI 或调整阈值。
+两个模型顺序运行会降低帧率。包裹模型的训练数据中没有人，近景人脸、躯干常被误判为
+`defect-parcel`，所以包裹框需要额外通过两道过滤：框面积超过画面 `VISION_PACKAGE_MAX_AREA`
+（默认 30%）的丢弃；框中心位于人框上 3/4，且至少 `VISION_PACKAGE_PERSON_OVERLAP`
+（默认 50%）落在人框内的丢弃，这类框通常是人脸、身体或手持物品。人框下 1/4（脚边）的包裹
+不受影响。按现有 138 张历史误报快照回放，误报从 135 个降为 0，3 个真实纸箱均被保留。
+如果摄像头离包裹很近，导致真实包裹占画面超过 30%，请调大 `VISION_PACKAGE_MAX_AREA`。
+务必用真实门口、空场景、白天和夜间验证；全画面判断可能增加误报，必要时可缩小 ROI 或调整阈值。
 
 ## 快速开始
 
@@ -131,7 +159,11 @@ Lite2 与系统 `librknnrt` 版本必须匹配；上面的 2.3.2 是本 Quectel 
 | `VISION_DWELL_S` | 10 | 停留多久算入侵 |
 | `VISION_STATIC_S` | 5 | 连续检测到物体并保持静止多久才上报 |
 | `VISION_DEDUPE_S` | 10 | 已上报包裹连续消失多久后允许重新上报 |
+| `VISION_PACKAGE_MAX_AREA` | 0.3 | 包裹框占画面比例上限，超过视为误检；设 1 关闭 |
+| `VISION_PACKAGE_PERSON_OVERLAP` | 0.5 | 包裹框落在人体中上部的比例达到此值视为误检；设大于 1 关闭 |
 | `VISION_CLIP_AFTER_S` | 20 | 事件后录多久 |
+| `VISION_PAUSE_WITHOUT_UI` | 1 | 无界面心跳/预览/录像时释放相机、暂停检测；设 0 保持 7×24 检测 |
+| `VISION_UI_LEASE_S` | 15 | 界面心跳超时秒数 |
 | `VISION_TOKEN` | 空 | 设置后所有请求需鉴权（**公网必须设**） |
 | `MQTT_HOST` / `MQTT_TOPIC` | 空 / `lock/event` | 不配则只落本地 JSONL |
 

@@ -42,6 +42,17 @@ class DetectorTests(unittest.TestCase):
         for y, x in [(0, 50), (99, 50), (50, 0), (50, 99)]:
             self.assertEqual(tuple(frame[y, x]), (0, 200, 255))
 
+    def test_draw_detections_styles_boxes_and_tolerates_edge_cases(self) -> None:
+        from vision.detector import PARCEL_COLOR, PERSON_COLOR, draw_detections
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        draw_detections(frame, [
+            Detection(0, "person", 0.9, (100, 0, 300, 200)),     # 贴上沿：标签放框内
+            Detection(1, "good-parcel", 0.8, (400, 200, 700, 400)),  # 越界：裁剪
+            Detection(0, "person", 0.5, (10, 10, 10, 10)),        # 退化框：跳过
+        ])
+        self.assertEqual(tuple(frame[200, 120]), PERSON_COLOR)
+        self.assertEqual(tuple(frame[359, 620]), PARCEL_COLOR)
+
     def test_scales_detection_boxes_for_preview_size(self) -> None:
         detections = [Detection(0, "person", 0.9, (100, 50, 500, 300))]
 

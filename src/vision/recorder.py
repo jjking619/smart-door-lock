@@ -24,6 +24,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .detector import draw_detections
 from .ring import Frame
 
 logger = logging.getLogger(__name__)
@@ -181,11 +182,20 @@ class ClipJob:
     def done(self) -> bool:
         return not self._thread.is_alive()
 
+    @staticmethod
+    def _write(cw: "ClipWriter", frame: Frame) -> None:
+        if not frame.dets:
+            cw.write_jpeg(frame.jpeg)
+            return
+        img = cv2.imdecode(np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if img is not None:
+            cw.write_bgr(draw_detections(img, frame.dets))
+
     def _run(self) -> None:
         try:
             with ClipWriter(self.path, self.size, self.fps) as cw:
                 for f in self.pre_frames:
-                    cw.write_jpeg(f.jpeg)
+                    self._write(cw, f)
                 while time.monotonic() < self.deadline:
                     with self._queue_lock:
                         if self._queue:
@@ -193,7 +203,7 @@ class ClipJob:
                         else:
                             f = None
                     if f is not None:
-                        cw.write_jpeg(f.jpeg)
+                        self._write(cw, f)
                     else:
                         time.sleep(1.0 / (self.fps * 2))
         except Exception as exc:  # noqa: BLE001

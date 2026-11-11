@@ -93,6 +93,22 @@ tail -f data/logs/sessions/$(date +%F)/session-<sid>.log
 4. **云端故障不阻塞门铃**：熔断 60 s + 三级降级。
 5. **隐私**：只上传文本，不上传音频；本地 VAD 断句最长 8 s。
 
+## 访客请求开门 → 屋主在界面确认
+
+访客说出"开门 / 开锁 / 让我进去…"时，audiood **只挂起一条请求**，绝不自己开锁：
+
+1. 三种模式（streaming / realtime / dialog）都会调用 `TalkService.raise_unlock_request()`；
+   同一时间只保留一条，重复说会刷新原话和过期时间（`AUDIO_UNLOCK_REQUEST_TTL_S`，默认 60 s）。
+   streaming 模式在 ASR 最终识别文本命中开门关键词时立即推送，不等待 Bot 回复；
+   后续 Bot 超时或 TTS 失败不会丢失已推送的请求。
+2. `GET /health` 的 `unlock_request` 字段给出 `{id, text, ts, expires_in}`，界面每 1.5 s 轮询一次，
+   弹出"访客请求开门"窗口，附门口抓拍和访客原话。
+3. 屋主点"允许开门" → 界面走 lockd `POST /unlock`（`method=访客语音请求`），再把结果交回
+   `POST /unlock_request {id, decision: "allow", unlocked, reason?}`；点"拒绝"或关掉弹窗 →
+   `{id, decision: "deny"}`。
+4. 每次结果（允许 / 拒绝 / 超时）都会写入 `events.jsonl`，类型为 `unlock.request`，记录页可查；
+   成功开锁另有 lockd 的 `door.opened`。没有会话占用扬声器时，会播报一句结果给访客。
+
 ## 待接（下一步）
 
 - [x] Coze ASR / 工作流 / TTS 全链路（`coze_audio.py`）
@@ -117,6 +133,7 @@ tail -f data/logs/sessions/$(date +%F)/session-<sid>.log
 | `AUDIO_INPUT_DEVICE` / `AUDIO_OUTPUT_DEVICE` | 系统默认 | `sounddevice` 设备号（`python -m sounddevice` 查） |
 | `AUDIO_SILENCE_RMS` | 300 | VAD 阈值，噪音大就调高 |
 | `AUDIO_MAX_UTTER_S` | 8 | 单句最长录音 |
+| `AUDIO_UNLOCK_REQUEST_TTL_S` | 60 | 访客开门请求在界面上等待屋主处理的时长（秒） |
 | `AUDIO_LOG_DIR` | `data/logs` | 文件日志目录（相对路径按项目根目录解析） |
 | `AUDIO_LOG_FILE` | `audiood.log` | 日志文件名（可用绝对路径） |
 | `AUDIO_LOG_MAX_MB` | `10` | 单个日志文件最大大小（MB），超过后滚动 |
@@ -136,4 +153,4 @@ tail -f data/logs/sessions/$(date +%F)/session-<sid>.log
 | `code 4000 workflow_id is invalid` | ID 不存在 | 同上 |
 | `code 4200` | 工作流存在但**未发布** | console 里点「发布」 |
 | `code 4100 access_token required` | token 缺失/过期 | 重新生成 PAT |
-| `code 4028 Insufficient coze credits balance` | Coze 开放平台额度不足（与 Bot 消息条数不同） | 去 Coze 开放平台账单页核对 API 额度；可调大 `COZE_QUOTA_RETRY_S` 减少频繁重试 |
+| `code 4028 Insufficient coze credits balance` | Coze API 积分不足；与 Bot 免费消息次数不是同一额度 | 核对当前 `COZE_API_TOKEN` 所属账号 / 空间的开放平台 API 积分；冷却后需手动再次发起语音会话，服务不会自动重试 |

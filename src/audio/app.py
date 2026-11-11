@@ -17,6 +17,9 @@ import asyncio
 import logging
 import os
 import time
+import uuid
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
@@ -26,12 +29,17 @@ from .coze_audio import CozeAudio, safe_synthesize, safe_transcribe
 from .coze_client import CozeConfigError, CozeUnavailable, answer_with_fallback
 from .logging_setup import configure_audio_logging
 
+try:
+    from event_log import append_event
+except ImportError:  # pragma: no cover - 仅在 src 不在 sys.path 时
+    append_event = None
+
 logger = logging.getLogger("audiood")
 
 COZE_MODE = os.getenv("COZE_MODE", "realtime").strip().lower()
 COZE_QUOTA_RETRY_S = float(os.getenv("COZE_QUOTA_RETRY_S", "60"))
 COZE_QUOTA_ERROR_CODE = 4028
-COZE_QUOTA_ERROR_TEXT = "Coze 余额不足（4028），请充值或等待额度刷新"
+COZE_QUOTA_ERROR_TEXT = "Coze API 积分不足（4028；与 Bot 消息次数不同），请核对此 Token 所属账号的 API 额度"
 
 SAMPLE_RATE = 16_000
 FRAME_MS = 20
@@ -40,6 +48,14 @@ SILENCE_RMS = float(os.getenv("AUDIO_SILENCE_RMS", "300"))
 MAX_UTTER_S = float(os.getenv("AUDIO_MAX_UTTER_S", "8"))
 AUDIO_HTTP_PORT = int(os.getenv("AUDIO_HTTP_PORT", "8084"))
 AUDIO_USE_STDIN_BELL = os.getenv("AUDIO_USE_STDIN_BELL", "0") == "1"
+#: 访客"请求开门"在界面上等待屋主决定的时长，超时视为未处理。
+UNLOCK_REQUEST_TTL_S = float(os.getenv("AUDIO_UNLOCK_REQUEST_TTL_S", "60"))
+EVENTS_PATH = Path(os.getenv("VISION_DATA_DIR", "data")) / "events.jsonl"
+UNLOCK_DECISION_TEXT = {"allow": "屋主允许", "deny": "屋主拒绝", "timeout": "超时未处理"}
+UNLOCK_REPLY_TEXT = {
+    "allow": "主人已为您开门，请进。",
+    "deny": "抱歉，主人暂时无法为您开门。",
+}
 
 
 def _realtime_config_error() -> str | None:
@@ -184,10 +200,79 @@ class TalkService:
         self._talk_error_since = 0.0
         self._conversation: list[dict[str, object]] = []
         self._conversation_status = "空闲"
+        self._unlock_request: dict[str, object] | None = None
+
+    # -- 访客请求开门：只挂起等屋主在界面上决定，audiood 自己绝不开锁 --
+    def raise_unlock_request(self, text: str) -> dict[str, object]:
+        current = self.current_unlock_request()
+        if current is not None:
+            # 同一次来访反复说"开门"只保留一条，刷新原话和过期时间
+            current["text"] = text
+            current["expires"] = time.time() + UNLOCK_REQUEST_TTL_S
+            return current
+        self._unlock_request = {
+            "id": uuid.uuid4().hex[:12],
+            "text": text,
+            "ts": time.time(),
+            "expires": time.time() + UNLOCK_REQUEST_TTL_S,
+        }
+        logger.warning("访客请求开门，已推送界面等待屋主确认: id=%s text=%s",
+                       self._unlock_request["id"], text[:60])
+        return self._unlock_request
+
+    def current_unlock_request(self) -> dict[str, object] | None:
+        req = self._unlock_request
+        if req is not None and time.time() > float(req["expires"]):
+            logger.info("访客开门请求已超时未处理: id=%s", req["id"])
+            self._unlock_request = None
+            _record_unlock_event(req, "timeout")
+            return None
+        return req
+
+    def resolve_unlock_request(self, req_id: str, decision: str, *, unlocked: bool | None = None,
+                               reason: str = "") -> dict[str, object]:
+        req = self.current_unlock_request()
+        if req is None or req["id"] != req_id:
+            return {"ok": False, "error": "请求不存在或已过期"}
+        self._unlock_request = None
+        logger.warning("屋主%s访客开门请求: id=%s text=%s unlocked=%s reason=%s",
+                       "允许" if decision == "allow" else "拒绝", req_id, str(req["text"])[:60],
+                       unlocked, reason)
+        _record_unlock_event(req, decision, unlocked=unlocked, reason=reason)
+        reply = UNLOCK_REPLY_TEXT["allow" if decision == "allow" and unlocked is not False else "deny"]
+        self._conversation.append({"role": "assistant", "text": reply, "partial": False})
+        self._schedule_reply(reply)
+        return {"ok": True, "id": req_id, "decision": decision}
+
+    def _schedule_reply(self, text: str) -> None:
+        busy = self._active_task is not None and not self._active_task.done()
+        if busy:
+            # 会话正占用扬声器，避免两路音频叠在一起；文字已写入对话记录
+            return
+        try:
+            asyncio.get_running_loop().create_task(self._speak(text))
+        except RuntimeError:
+            pass
+
+    async def _speak(self, text: str) -> None:
+        try:
+            audio = self.audio or CozeAudio()
+            pcm, rate = await safe_synthesize(audio, text)
+            if pcm:
+                await asyncio.get_running_loop().run_in_executor(None, play_pcm, pcm, rate, self.out_dev)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("播报开门结果失败: %s", exc)
+
+    def _realtime_event(self, event: dict) -> None:
+        if event.get("type") == "visitor.request_unlock":
+            self.raise_unlock_request(str(event.get("text") or ""))
 
     def _conversation_update(self, event: dict[str, str]) -> None:
         event_type = event.get("type")
         text = event.get("text", "")
+        if event_type == "unlock_request":
+            self.raise_unlock_request(text)
+            return
         if event_type == "status":
             self._conversation_status = text
             return
@@ -304,7 +389,7 @@ class TalkService:
                     self._clear_talk_error()
                 else:
                     retry_after = max(1, int(COZE_QUOTA_RETRY_S - elapsed))
-                    message = f"{self.talk_error}（{retry_after}s 后自动重试）"
+                    message = f"{self.talk_error}（冷却 {retry_after}s 后可手动重试）"
                     logger.warning("talk trigger rejected by talk_error: %s", message)
                     return {"ok": False, "error": message}
             if self.talk_error:
@@ -387,7 +472,7 @@ class TalkService:
         from .coze_realtime import RealtimeVoiceSession  # noqa: PLC0415
 
         try:
-            session = RealtimeVoiceSession()
+            session = RealtimeVoiceSession(on_event=self._realtime_event)
         except CozeConfigError as exc:
             logger.error("实时语音配置错误：\n%s", exc)
             return
@@ -422,6 +507,7 @@ class TalkService:
             reset()
 
         t0 = time.monotonic()
+        visitor_text = ""
         loop = asyncio.get_running_loop()
         pcm = await loop.run_in_executor(None, self.recorder.record_utterance)
         if not pcm:
@@ -443,13 +529,12 @@ class TalkService:
         if ans.needs_local_auth:
             # 只发事件，不做开锁动作 —— 由 lockd 校验后经 HMAC 下发 MCU
             logger.warning("访客请求开锁，已上报待人工确认（不会自动开门）")
+            self.raise_unlock_request(visitor_text or "")
 
         _dump_wav(pcm)
 
 
-async def _serve_http(service: TalkService, port: int) -> None:
-    logger.info("audiood HTTP 控制已启动 :%d", port)
-
+def _build_http_app(service: TalkService) -> web.Application:
     async def health(_req: web.Request) -> web.Response:
         busy = service._active_task is not None and not service._active_task.done()
         conversation = [
@@ -465,7 +550,27 @@ async def _serve_http(service: TalkService, port: int) -> None:
             "talk_error_code": service._talk_error_code,
             "conversation_status": service._conversation_status,
             "conversation": conversation,
+            "unlock_request": _public_unlock_request(service.current_unlock_request()),
         })
+
+    async def unlock_request(req: web.Request) -> web.Response:
+        try:
+            payload = await req.json()
+        except Exception:  # noqa: BLE001
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        req_id = str(payload.get("id") or "")
+        decision = str(payload.get("decision") or "")
+        if not req_id or decision not in {"allow", "deny"}:
+            return web.json_response({"ok": False, "error": "需要 id 和 decision=allow|deny"}, status=400)
+        unlocked = payload.get("unlocked")
+        result = service.resolve_unlock_request(
+            req_id, decision,
+            unlocked=unlocked if isinstance(unlocked, bool) else None,
+            reason=str(payload.get("reason") or "")[:120],
+        )
+        return web.json_response(result, status=200 if result.get("ok") else 404)
 
     async def talk(req: web.Request) -> web.Response:
         try:
@@ -481,7 +586,13 @@ async def _serve_http(service: TalkService, port: int) -> None:
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_post("/talk", talk)
+    app.router.add_post("/unlock_request", unlock_request)
+    return app
 
+
+async def _serve_http(service: TalkService, port: int) -> None:
+    logger.info("audiood HTTP 控制已启动 :%d", port)
+    app = _build_http_app(service)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", port)
@@ -494,6 +605,44 @@ async def _serve_http(service: TalkService, port: int) -> None:
             await asyncio.Event().wait()
     finally:
         await runner.cleanup()
+
+
+def _record_unlock_event(req: dict[str, object], decision: str, *, unlocked: bool | None = None,
+                         reason: str = "") -> None:
+    """写进与 visiond / lockd 共用的 events.jsonl，记录页里能看到每次请求的处理结果。"""
+    if append_event is None:
+        return
+    event = {
+        "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "type": "unlock.request",
+        "source": "audiood",
+        "severity": "info" if decision == "allow" and unlocked is not False else "warn",
+        "conf": 0,
+        "zone": "access",
+        "request_id": req["id"],
+        "decision": decision,
+        "decision_text": UNLOCK_DECISION_TEXT.get(decision, decision),
+        "text": str(req.get("text") or "")[:120],
+    }
+    if unlocked is not None:
+        event["unlocked"] = unlocked
+    if reason:
+        event["reason"] = reason
+    try:
+        append_event(EVENTS_PATH, event)
+    except OSError:
+        logger.exception("无法写入访客开门请求事件")
+
+
+def _public_unlock_request(req: dict[str, object] | None) -> dict[str, object] | None:
+    if req is None:
+        return None
+    return {
+        "id": req["id"],
+        "text": req["text"],
+        "ts": req["ts"],
+        "expires_in": max(0, int(float(req["expires"]) - time.time())),
+    }
 
 
 async def _play_fallback(out_dev: int | None) -> None:

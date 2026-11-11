@@ -223,10 +223,12 @@ class FingerprintService:
     def begin_enroll(self, name: str, finger: str) -> None:
         self._begin("enroll", {"name": name, "finger": finger})
 
+    def begin_refresh(self) -> None:
+        self._begin("refresh", {})
+
     def begin_delete(self, location: int) -> None:
-        with self._users_lock:
-            if location not in self._users:
-                raise ValueError("只能删除已在界面登记的指纹，未登记模板请先通过模块管理")
+        if location not in self._template_locations:
+            raise ValueError("未找到模块中的指纹模板，请刷新后重试")
         self._begin("delete", {"id": location})
 
     def begin_rename(self, location: int, name: str, finger: str) -> None:
@@ -353,6 +355,8 @@ class FingerprintService:
                     self._delete(int(payload["id"]))
                 elif action == "rename":
                     self._rename(int(payload["id"]), payload["name"], payload["finger"])
+                elif action == "refresh":
+                    self._refresh_templates()
             except (InterruptedError, TimeoutError, FingerprintOperationError) as exc:
                 logger.info("指纹操作已结束：%s", exc)
                 self._set_state(error=str(exc), action=None, step="")
@@ -586,6 +590,19 @@ class FingerprintService:
             self._cancel.clear()
             self._set_state(action=None, step="")
 
+    def _refresh_templates(self) -> None:
+        assert self._sensor is not None
+        self._set_state(step="正在读取模块指纹列表")
+        for method in ("read_templates", "count_templates"):
+            code = self._call(method)
+            if code != OK:
+                raise FingerprintOperationError(describe_code(code, "刷新指纹列表"))
+        self._template_locations = list(self._sensor.templates)
+        self._set_state(
+            template_count=int(self._sensor.template_count or 0),
+            action=None, step="", notice="刷新完成",
+        )
+
     def _delete(self, location: int) -> None:
         assert self._sensor is not None
         code = self._call("delete_model", location)
@@ -596,18 +613,21 @@ class FingerprintService:
         ]
         with self._users_lock:
             user = self._users.pop(location, {})
-        self._sensor.count_templates()
+        code = self._call("count_templates")
+        if code != OK:
+            raise FingerprintOperationError("模板已删除，但无法刷新模块模板数量")
         self._set_state(template_count=int(self._sensor.template_count or 0))
         try:
             self._save_users()
         except OSError as exc:
-            raise FingerprintOperationError(f"模板已删除，但用户信息保存失败：{exc}") from exc
-        finally:
             self._set_state(action=None, step="")
-        code = self._sensor.read_templates()
+            raise FingerprintOperationError(f"模板已删除，但用户信息保存失败：{exc}") from exc
+        code = self._call("read_templates")
         if code != OK:
             raise FingerprintOperationError("模板已删除，但无法刷新模块模板列表")
         self._template_locations = list(self._sensor.templates)
+        self._set_state(action=None, step="",
+                        notice=f"指纹已删除：{user.get('name') or '未登记模板'}（编号 {location}）")
         self._emit("finger.deleted", severity="info", user=user.get("name", ""),
                    finger_id=location)
 
@@ -704,12 +724,20 @@ def create_app(service: FingerprintService) -> web.Application:
         service.cancel()
         return web.json_response({"ok": True})
 
+    async def refresh(_request: web.Request) -> web.Response:
+        try:
+            service.begin_refresh()
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
+        return web.json_response({"ok": True}, status=202)
+
     app.router.add_get("/health", health)
     app.router.add_get("/templates", templates)
     app.router.add_post("/enroll", enroll)
     app.router.add_post("/delete", delete)
     app.router.add_post("/rename", rename)
     app.router.add_post("/cancel", cancel)
+    app.router.add_post("/refresh", refresh)
     return app
 
 

@@ -127,6 +127,7 @@ class VideoView(QLabel):
         self.setObjectName("Video")
         self.setMinimumSize(560, 315)
         self.setScaledContents(False)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._api = api
         self._thread: QThread | None = None
         self._worker: _StreamWorker | None = None
@@ -245,7 +246,7 @@ class VideoView(QLabel):
             return      # 布局还没跑过，此时 scaled() 会返回 null
         # QImage.scaled() 返回 QImage，QLabel.setPixmap 需要 QPixmap，必须显式转换
         self.setPixmap(QPixmap.fromImage(self._pixmap).scaled(
-            size, _keep_aspect, _fast,
+            size, _cover, _fast,
         ))
 
     def _empty_pixmap(self, text: str):
@@ -267,5 +268,5 @@ class VideoView(QLabel):
         self._apply()
 
 
-_keep_aspect = Qt.AspectRatioMode.KeepAspectRatio
+_cover = Qt.AspectRatioMode.KeepAspectRatioByExpanding
 _fast = Qt.TransformationMode.FastTransformation

@@ -74,6 +74,37 @@ def _norm_center(det: Detection, w: int, h: int) -> tuple[float, float]:
     return ((x1 + x2) / 2 / w, y2 / h)
 
 
+# 包裹框中心高于人框此高度比例时视为"人身上的"（脸/躯干/手持），低于则可能是脚边的包裹
+_PERSON_BODY_FRACTION = 0.75
+
+
+def _covered_by(inner: tuple[int, int, int, int], outer: tuple[int, int, int, int]) -> float:
+    ix = max(0, min(inner[2], outer[2]) - max(inner[0], outer[0]))
+    iy = max(0, min(inner[3], outer[3]) - max(inner[1], outer[1]))
+    area = max(1, (inner[2] - inner[0]) * (inner[3] - inner[1]))
+    return ix * iy / area
+
+
+def is_false_package(det: Detection, persons: list[Detection], w: int, h: int, cfg: Config) -> bool:
+    """包裹模型没见过人，近景人脸/躯干常被识别成包裹；按尺寸和人体重叠剔除。"""
+    if det.area > cfg.package_max_area * w * h:
+        return True
+    cy = (det.box[1] + det.box[3]) / 2
+    for p in persons:
+        body_limit = p.box[1] + (p.box[3] - p.box[1]) * _PERSON_BODY_FRACTION
+        if cy < body_limit and _covered_by(det.box, p.box) >= cfg.package_person_overlap:
+            return True
+    return False
+
+
+def filter_package_detections(dets: list[Detection], w: int, h: int, cfg: Config) -> list[Detection]:
+    persons = [d for d in dets if d.name in cfg.person_class_names]
+    return [
+        d for d in dets
+        if d.name not in cfg.package_class_names or not is_false_package(d, persons, w, h, cfg)
+    ]
+
+
 @dataclass(slots=True)
 class _Track:
     cls: str
@@ -121,6 +152,7 @@ class Rules:
         objects = [
             d for d in dets
             if d.name in self.cfg.package_class_names
+            and not is_false_package(d, persons, w, h, self.cfg)
             and _in_poly(_norm_center(d, w, h), self.cfg.ground_poly)
         ]
         package_tracks = self._update_tracks(objects, now)

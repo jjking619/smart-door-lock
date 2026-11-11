@@ -302,10 +302,23 @@ class PwmServoDriver:
                 if time.monotonic() >= deadline:
                     raise LockDriverError(f"导出 PWM 超时：{channel}")
                 time.sleep(0.01)
+        period_path = channel / "period"
+        try:
+            current_period = int(period_path.read_text(encoding="ascii").strip())
+            if current_period < 0:
+                raise ValueError(f"周期不能为负数：{current_period}")
+        except (OSError, ValueError) as exc:
+            self.error = f"PWM 周期读取失败 {period_path}：{exc}"
+            raise LockDriverError(self.error) from exc
+
+        # 新导出的通道周期为 0，内核会拒绝写入 enable 和 duty_cycle。
+        if current_period == 0:
+            self._write(period_path, self.PERIOD_NS)
         self._write(channel / "enable", 0)
         self._write(channel / "duty_cycle", 0)
         self._write(channel / "polarity", "normal")
-        self._write(channel / "period", self.PERIOD_NS)
+        if current_period != 0:
+            self._write(period_path, self.PERIOD_NS)
         self._ready = True
 
     def _move(self, angle: float) -> None:

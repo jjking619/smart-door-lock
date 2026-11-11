@@ -7,19 +7,27 @@
 from __future__ import annotations
 
 # ---- 颜色 ----
-BG = "#0F1216"          # 窗口底色
-SURFACE = "#171C23"     # 卡片
-SURFACE_2 = "#1F262F"   # 卡片内的次级块 / hover
-BORDER = "#2A3340"      # 1 px 分隔线
-TEXT = "#E8EEF4"
-TEXT_DIM = "#8C9AAB"
-TEXT_MUTED = "#5C6A7A"
+BG = "#0B0F15"          # 窗口底色
+SURFACE = "#141A23"     # 卡片
+SURFACE_2 = "#1C2430"   # 卡片内的次级块 / hover
+BORDER = "#263140"      # 1 px 分隔线
+TEXT = "#EEF3F8"
+TEXT_DIM = "#93A1B2"
+TEXT_MUTED = "#5F6D7E"
 
 OK = "#2FD3A8"
 ACCENT = "#2FD3A8"
 WARN = "#F2B33D"
 CRIT = "#F0555A"
 INFO = "#4A9EFF"
+
+# 五大功能各自的识别色：展会上远看也能一眼对上"哪块是哪个功能"。
+FEAT_LOCK = ACCENT
+FEAT_FINGER = "#7C8CFF"
+FEAT_VIDEO = INFO
+FEAT_INTRUSION = CRIT
+FEAT_PACKAGE = WARN
+FEAT_TALK = "#B57CFF"
 
 SEVERITY_COLOR = {
     "info": INFO,
@@ -67,26 +75,38 @@ QWidget#Root {{
 
 /* ---------- 顶栏 ---------- */
 QWidget#Header {{
-    background: {SURFACE};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #12302A, stop:0.35 {SURFACE}, stop:1 {SURFACE});
     border-bottom: 1px solid {BORDER};
 }}
 QLabel#Brand {{
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: 1px;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 2px;
 }}
 QLabel#BrandSub {{
-    color: {TEXT_MUTED};
-    font-size: 12px;
+    color: {TEXT_DIM};
+    font-size:14px;
+    letter-spacing: 1px;
 }}
 QLabel#Clock {{
-    font-size: 20px;
-    font-weight: 600;
+    font-size: 26px;
+    font-weight: 700;
     color: {TEXT};
 }}
+QPushButton#LangBtn {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 18px;
+    color: {TEXT};
+    font-size: 14px;
+    font-weight: 700;
+}}
+QPushButton#LangBtn:hover {{ border: 1px solid {ACCENT}; color: {ACCENT}; }}
+QPushButton#LangBtn:pressed {{ background: {BORDER}; }}
 QLabel#ClockSub {{
     color: {TEXT_MUTED};
-    font-size: 12px;
+    font-size:14px;
 }}
 
 /* ---------- 左侧导航 ---------- */
@@ -94,22 +114,21 @@ QWidget#Rail {{
     background: {SURFACE};
     border-right: 1px solid {BORDER};
 }}
-QPushButton#NavBtn {{
+QToolButton#NavBtn {{
     background: transparent;
     border: none;
-    border-left: 3px solid transparent;
+    border-radius: 12px;
     color: {TEXT_DIM};
-    padding: 12px 0;
+    padding: 0;
     text-align: center;
-    font-size: 13px;
+    font-size:15px;
 }}
-QPushButton#NavBtn:hover {{
+QToolButton#NavBtn:hover {{
     background: {SURFACE_2};
     color: {TEXT};
 }}
-QPushButton#NavBtn:checked {{
-    background: {SURFACE_2};
-    border-left: 3px solid {ACCENT};
+QToolButton#NavBtn:checked {{
+    background: rgba(47,211,168,0.14);
     color: {ACCENT};
     font-weight: 600;
 }}
@@ -118,11 +137,11 @@ QPushButton#NavBtn:checked {{
 QFrame#Card {{
     background: {SURFACE};
     border: 1px solid {BORDER};
-    border-radius: 10px;
+    border-radius: 14px;
 }}
 QLabel#CardTitle {{
     color: {TEXT_DIM};
-    font-size: 12px;
+    font-size:14px;
     letter-spacing: 1px;
 }}
 QLabel#CardHeadline {{
@@ -135,7 +154,7 @@ QLabel#PageTitle {{
 }}
 QLabel#PageSub {{
     color: {TEXT_MUTED};
-    font-size: 13px;
+    font-size:15px;
 }}
 QLabel#Muted {{
     color: {TEXT_DIM};
@@ -145,7 +164,62 @@ QLabel#Muted {{
 QWidget#Video {{
     background: #05070A;
     border: 1px solid {BORDER};
-    border-radius: 10px;
+    border-radius: 14px;
+}}
+
+/* ---------- 首页大按钮 ---------- */
+QPushButton#Action {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 14px;
+    min-height: 68px;
+    font-size: 18px;
+    font-weight: 600;
+    color: {TEXT};
+    padding: 0 18px;
+}}
+QPushButton#Action:hover {{ background: {SURFACE_2}; }}
+QPushButton#Action:pressed {{ background: {BORDER}; }}
+QPushButton#Action:disabled {{ color: {TEXT_MUTED}; }}
+QPushButton#ActionTalkOn {{
+    background: {FEAT_TALK};
+    border: none;
+    border-radius: 14px;
+    min-height: 68px;
+    font-size: 18px;
+    font-weight: 700;
+    color: #1B0B2E;
+    padding: 0 18px;
+}}
+QPushButton#ActionRecOn {{
+    background: rgba(240,85,90,0.16);
+    border: 1px solid {CRIT};
+    border-radius: 14px;
+    min-height: 68px;
+    font-size: 18px;
+    font-weight: 700;
+    color: {CRIT};
+    padding: 0 18px;
+}}
+QPushButton#Primary[big="true"], QPushButton#Danger[big="true"] {{
+    border-radius: 14px;
+    min-height: 68px;
+    font-size: 19px;
+    font-weight: 700;
+}}
+
+/* ---------- 功能磁贴 ---------- */
+QFrame#Tile {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 14px;
+}}
+QFrame#Tile:hover {{ background: {SURFACE_2}; }}
+QLabel#TileTitle {{
+    color: {TEXT_DIM};
+    font-size:15px;
+    font-weight: 600;
+    letter-spacing: 1px;
 }}
 
 /* ---------- 按钮 ---------- */
@@ -202,6 +276,11 @@ QPushButton#Small {{
     padding: 0 12px;
 }}
 QPushButton#Small:hover {{ background: {SURFACE_2}; color: {TEXT}; }}
+QPushButton#Small:checked {{
+    background: rgba(47,211,168,0.14);
+    border: 1px solid rgba(47,211,168,0.45);
+    color: {ACCENT};
+}}
 
 /* ---------- 列表 ---------- */
 QListWidget {{
@@ -217,6 +296,8 @@ QListWidget::item:selected {{ background: {SURFACE_2}; }}
 QListWidget::item:hover {{ background: {SURFACE_2}; }}
 
 QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget#qt_scrollarea_viewport,
+QScrollArea > QWidget#qt_scrollarea_viewport > QWidget {{ background: transparent; }}
 QScrollBar:vertical {{
     background: transparent;
     width: 8px;
@@ -231,6 +312,51 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 
 /* ---------- 其它 ---------- */
+QTabWidget#SettingsTabs::pane {{
+    border: none;
+}}
+QTabWidget#SettingsTabs QTabBar::tab {{
+    background: {SURFACE};
+    color: {TEXT_DIM};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 10px 24px;
+    margin-right: 10px;
+    font-size: 15px;
+    min-height: 22px;
+}}
+QTabWidget#SettingsTabs QTabBar::tab:selected {{
+    background: {SURFACE_2};
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+QTabWidget#SettingsTabs QTabBar::tab:hover {{
+    color: {TEXT};
+}}
+QListWidget#FingerprintList {{
+    background: {BG};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    padding: 6px;
+}}
+QListWidget#FingerprintList::item {{
+    background: transparent;
+    border: none;
+    padding: 0;
+}}
+QListWidget#FingerprintList::item:selected {{
+    background: transparent;
+}}
+QFrame#FingerprintRow {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+}}
+QFrame#FingerprintRow:hover {{ border-color: #3B4D5C; }}
+QFrame#FingerprintRow[selected="true"] {{
+    background: #1A2A30;
+    border-color: {ACCENT};
+}}
 QComboBox {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};
@@ -262,6 +388,24 @@ QCheckBox::indicator:checked {{
     background: {ACCENT};
     border: 1px solid {ACCENT};
 }}
+QMessageBox {{
+    background: {SURFACE};
+    color: {TEXT};
+}}
+QMessageBox QLabel {{
+    background: transparent;
+    color: {TEXT};
+}}
+QMessageBox QPushButton {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    color: {TEXT};
+    min-width: 76px;
+    min-height: 36px;
+    padding: 0 12px;
+}}
+QMessageBox QPushButton:hover {{ border-color: {ACCENT}; }}
 QSlider::groove:horizontal {{
     height: 4px; background: {BORDER}; border-radius: 2px;
 }}

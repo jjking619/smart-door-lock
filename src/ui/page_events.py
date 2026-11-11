@@ -44,7 +44,7 @@ class DetailPanel(QFrame):
         self.title = QLabel("")
         self.title.setStyleSheet(f"font-size:16px;font-weight:600;color:{theme.TEXT};")
         self.meta = QLabel("")
-        self.meta.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:12px;")
+        self.meta.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:14px;")
         self.meta.setWordWrap(True)
 
         row = QHBoxLayout()
@@ -190,7 +190,7 @@ class EventsPage(QWidget):
         self.list.setVisible(bool(shown))
         if not shown:
             self._empty.setText({
-                "intrusion": "暂无入侵事件",
+                "intrusion": "暂无安全事件",
                 "package": "暂无快递事件",
                 "access": "暂无出入记录",
                 "system": "暂无系统事件",

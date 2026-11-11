@@ -369,15 +369,58 @@ class Detector:
         return arr
 
 
+# 与界面主题一致（BGR）：人员 = INFO 蓝，包裹 = WARN 琥珀
+PERSON_COLOR = (255, 158, 74)
+PARCEL_COLOR = (61, 179, 242)
+OTHER_COLOR = (200, 200, 200)
+
+
+def _box_style(name: str) -> tuple[tuple[int, int, int], str]:
+    if name == "person":
+        return PERSON_COLOR, "Person"
+    # 进入 detect_frame 结果的非人类别都是包裹类（含无包裹模型时的行李类）
+    return (PARCEL_COLOR, "Parcel") if name else (OTHER_COLOR, name)
+
+
+def draw_detections(bgr: np.ndarray, dets) -> np.ndarray:  # noqa: ANN001
+    """半透明填充 + 细边框 + 加粗四角 + 实底标签，box 坐标须与 bgr 同尺度。"""
+    h, w = bgr.shape[:2]
+    s = max(0.6, w / 640)
+    edge = max(1, round(1.2 * s))
+    corner = max(2, round(3 * s))
+    font, font_scale = cv2.FONT_HERSHEY_DUPLEX, 0.48 * s
+    pad = max(3, round(4 * s))
+    for d in dets:
+        x1, y1, x2, y2 = (int(v) for v in d.box)
+        x1, x2 = max(0, min(x1, w - 1)), max(0, min(x2, w - 1))
+        y1, y2 = max(0, min(y1, h - 1)), max(0, min(y2, h - 1))
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            continue
+        color, label = _box_style(d.name)
+
+        roi = bgr[y1:y2, x1:x2]
+        cv2.addWeighted(np.full_like(roi, color), 0.14, roi, 0.86, 0, dst=roi)
+        cv2.rectangle(bgr, (x1, y1), (x2, y2), color, edge, cv2.LINE_AA)
+        arm = int(max(6, min(x2 - x1, y2 - y1) * 0.2))
+        for cx, cy, dx, dy in ((x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)):
+            cv2.line(bgr, (cx, cy), (cx + dx * arm, cy), color, corner, cv2.LINE_AA)
+            cv2.line(bgr, (cx, cy), (cx, cy + dy * arm), color, corner, cv2.LINE_AA)
+
+        text = f"{label} {round(d.conf * 100)}%"
+        (tw, th), _ = cv2.getTextSize(text, font, font_scale, 1)
+        lw, lh = tw + 2 * pad, th + 2 * pad
+        lx = min(x1, max(0, w - lw))
+        # 框顶贴着画面上沿时，标签放进框内
+        ly = y1 - lh - 1 if y1 - lh - 1 >= 0 else y1 + 1
+        cv2.rectangle(bgr, (lx, ly), (lx + lw, ly + lh), color, -1)
+        cv2.putText(bgr, text, (lx + pad, ly + pad + th), font, font_scale,
+                    (24, 24, 24), 1, cv2.LINE_AA)
+    return bgr
+
+
 def draw(bgr: np.ndarray, dets: list[Detection], fps: float, zones: list[tuple[str, list[tuple[float, float]]]]) -> np.ndarray:
     h, w = bgr.shape[:2]
-    for d in dets:
-        x1, y1, x2, y2 = d.box
-        color = (0, 255, 0) if d.name in ("person", "box", "package") else (200, 200, 200)
-        cv2.rectangle(bgr, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(bgr, f"{d.name} {d.conf:.2f}", (x1 + 2, max(14, y1 - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-
+    draw_detections(bgr, dets)
     label_counts: dict[tuple[int, int], int] = {}
     for name, poly in zones:
         pts = np.array([[int(x * (w - 1)), int(y * (h - 1))] for x, y in poly], dtype=np.int32)
@@ -388,6 +431,7 @@ def draw(bgr: np.ndarray, dets: list[Detection], fps: float, zones: list[tuple[s
         cv2.putText(bgr, name, (origin[0] + 4, origin[1] + 18 + count * 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 1, cv2.LINE_AA)
 
-    cv2.putText(bgr, f"{fps:.1f} fps", (8, h - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    text = f"{fps:.1f} fps"
+    for color, thickness in (((0, 0, 0), 3), ((255, 255, 255), 1)):
+        cv2.putText(bgr, text, (8, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, thickness, cv2.LINE_AA)
     return bgr

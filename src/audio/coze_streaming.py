@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 import numpy as np
 import sounddevice as sd
 
-from .coze_bot import CozeBotClient
+from .coze_bot import CozeBotClient, requests_unlock
 from .coze_client import CozeUnavailable
 from .logging_setup import create_session_file_logger
 
@@ -186,6 +186,10 @@ class CozeStreamingSession:
                     text = text.strip()
                     self.transcripts.append(("visitor", text))
                     self._emit_update("visitor_final", text)
+                    unlock_requested = requests_unlock(text)
+                    if unlock_requested:
+                        self._warning("访客请求开门，已推送界面等待屋主确认；不会自动开锁")
+                        self._emit_update("unlock_request", text)
                     self._info("访客: %s", text)
                     self._info("%s ASR final text_len=%d", self._sid(), len(text))
                     self._emit_update("status", "助手正在回复")
@@ -195,8 +199,9 @@ class CozeStreamingSession:
                     self._emit_update("assistant_final", reply.text)
                     self._info("Bot: %s", reply.text)
                     self._info("%s bot turn done reply_len=%d", self._sid(), len(reply.text))
-                    if reply.needs_local_auth:
-                        self._warning("访客请求开门，已标记待本地鉴权；不会自动开锁")
+                    if reply.needs_local_auth and not unlock_requested:
+                        self._warning("访客请求开门，已推送界面等待屋主确认；不会自动开锁")
+                        self._emit_update("unlock_request", text)
                     last_activity = time.monotonic()
             except asyncio.CancelledError:
                 status = "cancelled"

@@ -88,10 +88,44 @@ class HomeLockStateTests(unittest.TestCase):
         page = self._page({"service": "lockd", "state": "locked", "driver": {"driver": "servo"}})
         api = Mock()
         window = SimpleNamespace(api=api, home=page)
-        MainWindow._request_unlock(window)
-        api.lock_unlock.call_args.kwargs["on_ok"]({"ok": True, "seconds": 5})
-        self.assertIn("已自动回锁", page.hint.text())
-        self.assertNotIn("秒后自动回锁", page.hint.text())
+        with patch("ui.page_home.QTimer.singleShot") as single_shot:
+            MainWindow._request_unlock(window)
+            api.lock_unlock.call_args.kwargs["on_ok"]({"ok": True, "seconds": 5})
+            self.assertIn("已自动回锁", page.hint.text())
+            self.assertNotIn("秒后自动回锁", page.hint.text())
+            self.assertEqual(single_shot.call_args.args[0], 5000)
+            single_shot.call_args.args[1]()
+            self.assertEqual(page.hint.text(), "")
+        page.close()
+
+    def test_expiring_unlock_message_does_not_clear_a_later_hint(self):
+        page = self._page({"service": "lockd", "state": "locked", "driver": {"driver": "servo"}})
+        api = Mock()
+        window = SimpleNamespace(api=api, home=page)
+        with patch("ui.page_home.QTimer.singleShot") as single_shot:
+            MainWindow._request_unlock(window)
+            api.lock_unlock.call_args.kwargs["on_ok"]({"ok": True, "seconds": 5})
+            expire = single_shot.call_args.args[1]
+            page.hint.setText("新的错误提示")
+            expire()
+        self.assertEqual(page.hint.text(), "新的错误提示")
+        page.close()
+
+    def test_home_hides_normal_vision_counters_but_keeps_problem_status(self):
+        page = HomePage(LockStub({}))
+        health = SimpleNamespace(
+            detector_error=None, package_detector_error=None,
+            package_detector_enabled=False, package_detector=None,
+            fps=8.9, ring=100, preview_clients=1, clips_active=0,
+            recording_requested=False, recording_active=False,
+        )
+        page._on_health(health)
+        self.assertEqual(page.conn_label.text(), "")
+
+        health.detector_error = "推理失败"
+        page._on_health(health)
+        self.assertIn("检测异常", page.conn_label.text())
+        self.assertNotIn("fps", page.conn_label.text())
         page.close()
 
     def test_lockout_disables_the_button_and_explains_why(self):

@@ -85,16 +85,25 @@ class Config:
             "VISION_GROUND_POLY", FULL_FRAME_POLYGON
         )
     )
+    preview_show_zones: bool = os.getenv("VISION_PREVIEW_ZONES", "0") == "1"  # 预览是否画 ROI 黄框
     dwell_seconds: float = _f("VISION_DWELL_S", 10.0)   # 闯入：停留多久算异常
     static_seconds: float = _f("VISION_STATIC_S", 5.0)   # 快递：静止多久算包裹
     person_leave_grace_s: float = _f("VISION_PERSON_LEAVE_S", 20.0)
     dedupe_seconds: float = _f("VISION_DEDUPE_S", 10.0)  # 已上报包裹消失多久后重新允许上报
+    # 包裹模型会把近景人脸/躯干误判为包裹：过大框、与人体中上部大面积重叠的框都丢弃
+    package_max_area: float = _f("VISION_PACKAGE_MAX_AREA", 0.3)          # 占画面比例上限
+    package_person_overlap: float = _f("VISION_PACKAGE_PERSON_OVERLAP", 0.5)  # 落在人框内的比例上限
     night_hours: tuple[int, int] = (22, 7)             # 夜间更敏感
 
     # ---- 录像 ----
     clip_after_s: float = _f("VISION_CLIP_AFTER_S", 20.0)
     continuous_max_gb: float = _f("VISION_CONTINUOUS_MAX_GB", 5.0)
     data_dir: str = os.getenv("VISION_DATA_DIR", "data")
+
+    # ---- 无界面暂停 ----
+    # 没有界面心跳、预览、录像时释放相机并停止推理；代价是入侵/快递检测也随之停止
+    pause_without_ui: bool = os.getenv("VISION_PAUSE_WITHOUT_UI", "1") == "1"
+    ui_lease_s: float = _f("VISION_UI_LEASE_S", 15.0)   # 心跳超时多久算"界面已关闭"
 
     # ---- 事件总线 ----
     mqtt_host: str = os.getenv("MQTT_HOST", "")

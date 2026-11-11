@@ -69,16 +69,36 @@ def stop_process(process: subprocess.Popen | None) -> None:
         process.wait()
 
 
+def _wake_backend(base: str) -> None:
+    """尽早续一次租约，让暂停中的后台在界面启动期间就开始打开相机。"""
+    request = urllib.request.Request(
+        f"{base}/ui/heartbeat",
+        data=json.dumps({"client": f"launcher-{os.getpid()}"}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    token = os.getenv("VISION_TOKEN", "")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        urllib.request.urlopen(request, timeout=1).close()
+    except (OSError, ValueError, urllib.error.URLError):
+        pass
+
+
 def _can_reuse_existing_backend(base: str, package_model: str = "") -> bool:
     try:
         with urllib.request.urlopen(f"{base}/health", timeout=1) as response:
             status = json.load(response)
+        paused = bool(status.get("paused"))
+        if paused:
+            _wake_backend(base)
         if (
             not status.get("ok")
             or status.get("detector_error")
             or not status.get("detector")
-            or not status.get("camera")
-            or status.get("ring", 0) <= 0
+            # 暂停时相机已释放、缓冲已清空，界面心跳会把它唤醒
+            or (not paused and (not status.get("camera") or status.get("ring", 0) <= 0))
         ):
             return False
         if package_model:

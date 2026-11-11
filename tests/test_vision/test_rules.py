@@ -43,6 +43,28 @@ class PackageRuleTests(unittest.TestCase):
             events = self.rules.update([parcel], 640, 360, now=now)
             self.assertNotIn("package.detected", [event.kind for event in events])
 
+    def _reports_package(self, dets: list[Detection]) -> bool:
+        kinds: list[str] = []
+        for now in range(100, 104):
+            kinds += [event.kind for event in self.rules.update(dets, 640, 360, now=now)]
+        return "package.detected" in kinds
+
+    def test_oversized_package_box_is_ignored(self) -> None:
+        self.assertFalse(self._reports_package([Detection(0, "backpack", 0.9, (40, 0, 640, 360))]))
+
+    def test_package_box_on_person_body_is_ignored(self) -> None:
+        torso = Detection(0, "backpack", 0.9, (290, 140, 350, 220))
+        self.assertFalse(self._reports_package([self.person, torso]))
+
+    def test_package_at_person_feet_is_still_reported(self) -> None:
+        self.assertTrue(self._reports_package([self.person, self.parcel]))
+
+    def test_package_filters_are_configurable(self) -> None:
+        self.cfg.package_max_area = 1.0
+        self.cfg.package_person_overlap = 2.0
+        torso = Detection(0, "backpack", 0.9, (290, 140, 350, 220))
+        self.assertTrue(self._reports_package([self.person, torso]))
+
     def test_default_regions_cover_full_frame_including_boundaries(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             cfg = Config()
@@ -56,6 +78,7 @@ class PackageRuleTests(unittest.TestCase):
             self.assertFalse(_in_poly((1.01, 0.5), polygon))
 
     def test_person_and_package_events_near_each_frame_edge(self) -> None:
+        self.cfg.package_person_overlap = 2.0  # 本例只验证边界，同框人和包裹不做重叠抑制
         boxes = [
             (0, 0, 20, 20), (620, 0, 640, 20),
             (0, 320, 20, 360), (620, 320, 640, 360),
