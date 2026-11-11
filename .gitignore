@@ -1,9 +1,13 @@
-# 别把密钥、录像、模型提交上去
+# 别把密钥、录像和未明确纳入版本控制的模型提交上去
 .venv/
+.venv-ui/
 __pycache__/
 *.pyc
+*.egg-info/
 data/
 models/*.rknn
+!models/yolov5s-rk3576.rknn
+!models/parcel-yolov5n-rk3576-fp.rknn
 models/*.onnx
 *.env
 !*.env.example
