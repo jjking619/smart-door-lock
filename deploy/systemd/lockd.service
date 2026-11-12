@@ -5,13 +5,13 @@ Wants=visiond.service
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/smart-door-lock
-EnvironmentFile=-/etc/doorlock/lockd.env
-ExecStart=/home/pi/smart-door-lock/.venv/bin/python /home/pi/smart-door-lock/main.py --lock-only
+User=@SERVICE_USER@
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=@PROJECT_ROOT@/deploy/systemd/doorlock.env
+ExecStart=@PROJECT_ROOT@/.venv/bin/python @PROJECT_ROOT@/main.py --lock-only
 Restart=always
 RestartSec=3
-ReadWritePaths=/home/pi/smart-door-lock/data
+ReadWritePaths=@PROJECT_ROOT@/data
 
 [Install]
 WantedBy=multi-user.target

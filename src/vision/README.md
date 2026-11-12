@@ -16,9 +16,10 @@
 
 ## 在线录像
 
-首页实时画面旁的“开始录像”按钮默认关闭。开启后，录像按 5 分钟切分为 MP4，保存在
+首页实时画面旁的“开始录像”按钮默认关闭。开启后，录像约每 1 分钟切分为 MP4，持续录制至手动停止，保存在
 `data/recordings/continuous/YYYYMMDD/`；默认最多保留约 5 GB，达到上限后优先删除最早片段。
 可通过 `VISION_CONTINUOUS_MAX_GB` 调整容量。事件触发录像仍单独保存在 `data/clips/`，不受此开关影响。
+共享事件日志 `data/events.jsonl` 默认只保留最新 1000 条；超过上限时新事件会覆盖最旧记录。
 
 HTTP 控制接口为 `POST /recording`，JSON 请求体为 `{"on": true}` 或 `{"on": false}`；
 启用 `VISION_TOKEN` 时需要按其他受保护接口的方式提供令牌。`/health` 的 `recording`
@@ -61,13 +62,17 @@ HTTP 控制接口为 `POST /recording`，JSON 请求体为 `{"on": true}` 或 `{
 
 **快递识别：靠时序，不靠单帧**
 
-单帧看到"地上有个箱子"容易误报（可能是你自己的鞋柜）。规则是：
+默认在全画面检测包裹，不限于画面下半部。为避免单帧误检，规则是：
 
 ```
-1. ground ROI 内连续检测到包裹，并稳定 ≥ 5 s
+1. 全画面内连续检测到包裹，并稳定 ≥ 5 s
 2. 同一个包裹还没有上报过
    → package.detected
 ```
+
+画面上部、下部和四角都参与检测。需要限定检测范围时，可设置 `VISION_GROUND_POLY`；
+`ground` 是保留的历史配置名，不代表默认只检测地面区域。设置页展示的是默认范围，
+实际范围以 visiond 的环境变量为准。
 
 无需检测到人员。检测中断或包裹明显移动会重新计算稳定时间；上报后短暂遮挡不会重复提醒，
 连续消失达到 `VISION_DEDUPE_S` 后才允许再次上报。多个包裹分别计时和去重。
@@ -83,7 +88,7 @@ HTTP 控制接口为 `POST /recording`，JSON 请求体为 `{"on": true}` 或 `{
 已转换为 RK3576 的未量化 RKNN。COCO 的 `backpack`、`handbag`、`suitcase` 默认不会触发包裹事件。
 
 ```bash
-cd /home/pi/smart-door-lock
+cd smart-door-lock  # 按实际 clone 位置调整
 .venv/bin/python main.py
 ```
 
@@ -96,15 +101,23 @@ cd /home/pi/smart-door-lock
 包裹模型的训练数据中没有人，近景人脸、躯干常被误判为
 `defect-parcel`，所以包裹框需要额外通过两道过滤：框面积超过画面 `VISION_PACKAGE_MAX_AREA`
 （默认 30%）的丢弃；框中心位于人框上 3/4，且至少 `VISION_PACKAGE_PERSON_OVERLAP`
-（默认 50%）落在人框内的丢弃，这类框通常是人脸、身体或手持物品。人框下 1/4（脚边）的包裹
+（默认 50%）的包裹框落在人框内或人框落在包裹框内的丢弃，这类框通常是人脸、身体或手持物品。
+过滤使用 `VISION_PACKAGE_PERSON_CONF`（默认 0.2）以上的人框，不改变人员告警阈值。
+人框下 1/4（脚边）的包裹
 不受影响。按现有 138 张历史误报快照回放，误报从 135 个降为 0，3 个真实纸箱均被保留。
 如果摄像头离包裹很近，导致真实包裹占画面超过 30%，请调大 `VISION_PACKAGE_MAX_AREA`。
+部署模板启用 `VISION_PACKAGE_TILES=1`：包裹模型除全画面外，还会对重叠的方形区域进行推理，
+放大远处的小包裹并合并重复框；裁剪新增候选仅保留不超过全画面面积 5% 的框，减少近景误报。
+这会增加 NPU 负载和延迟，设置为 `0` 可关闭。
+远距离包裹可能得分偏低，可单独调整 `VISION_PACKAGE_CONF`，不影响人员阈值。
+调低阈值可能增加误报；如空场景出现误报，可逐步调高该值。阈值调节无法恢复画面中缺失的细节，
+必要时调整摄像头角度、距离和光照。模型输入尺寸固定，不要直接增大 `VISION_MODEL_INPUT`。
 务必用真实门口、空场景、白天和夜间验证；全画面判断可能增加误报，必要时可缩小 ROI 或调整阈值。
 
 ## 快速开始
 
 ```bash
-cd /home/pi/smart-door-lock
+cd smart-door-lock  # 按实际 clone 位置调整
 uv pip install --python .venv/bin/python -r requirements.txt
 
 # 1) 无硬件自测（合成画面 + 强制无模型），验证录像/缓冲/HTTP 骨架
@@ -136,11 +149,11 @@ Lite2 与系统 `librknnrt` 版本必须匹配；上面的 2.3.2 是本 Quectel 
 
 | 地址 | 用途 |
 | --- | --- |
-| `http://<板子IP>:8081/health` | 帧率、缓冲深度、检测后端 |
-| `http://<板子IP>:8081/stream` | MJPEG 实时预览（带 ROI 框） |
-| `http://<板子IP>:8081/snapshot.jpg` | 当前帧 |
-| `http://<板子IP>:8081/events?limit=20` | 最近事件 |
-| `http://<板子IP>:8081/media/clips/20261102/182743_906.mp4` | 下载录像 |
+| `http://<板子IP>:8083/health` | 帧率、缓冲深度、检测后端 |
+| `http://<板子IP>:8083/stream` | MJPEG 实时预览（带 ROI 框） |
+| `http://<板子IP>:8083/snapshot.jpg` | 当前帧 |
+| `http://<板子IP>:8083/events?limit=20` | 最近事件 |
+| `http://<板子IP>:8083/media/clips/20261102/182743_906.mp4` | 下载录像 |
 
 ## 配置（环境变量）
 
@@ -155,7 +168,10 @@ Lite2 与系统 `librknnrt` 版本必须匹配；上面的 2.3.2 是本 Quectel 
 | `VISION_CLASS_NAMES` | 内置 COCO 80 类 | 自定义模型类别名，逗号分隔，顺序必须匹配模型 |
 | `VISION_PACKAGE_MODEL_CLASS_NAMES` | `defect-parcel,good-parcel` | 包裹模型类别，顺序必须匹配模型 |
 | `VISION_PACKAGE_CLASSES` | `defect-parcel,good-parcel` | 触发包裹事件的类别；禁用第二模型时默认行李类 |
-| `VISION_CONF` / `VISION_NMS` | 0.35 / 0.45 | 检测阈值 |
+| `VISION_CONF` / `VISION_NMS` | 0.35 / 0.45 | 主模型置信度 / 非极大值抑制阈值；禁用包裹模型时包裹也使用主模型阈值 |
+| `VISION_PACKAGE_CONF` | 0.35 | 独立包裹模型置信度阈值，降低可提高弱目标召回率，但可能增加误报 |
+| `VISION_PACKAGE_PERSON_CONF` | 0.2 | 仅用于包裹误报过滤的人体置信度阈值，过低可能误过滤真实包裹 |
+| `VISION_PACKAGE_TILES` | 0（部署模板为 1） | 对重叠区域额外推理以识别小目标，会增加推理耗时 |
 | `VISION_INFER_EVERY_N` | 3 | 每 N 帧推理一次 |
 | `VISION_DOORSTEP_POLY` | 全画面 | 归一化多边形 `x1,y1;x2,y2;...` |
 | `VISION_GROUND_POLY` | 全画面 | 包裹 ROI（快递专用），可配置为更小的多边形 |
@@ -218,4 +234,4 @@ mpp 探测后会自动走 H.264，录像正常生成。
 - [ ] ByteTrack 多目标跟踪
 - [ ] 人脸识别（SCRFD + MobileFaceNet RKNN）
 - [ ] go2rtc 接入，出 WebRTC 低延迟流
-- [ ] 按天自动清理（保留 7 天）
+- [ ] 事件录像和抓拍按天自动清理（保留 7 天）

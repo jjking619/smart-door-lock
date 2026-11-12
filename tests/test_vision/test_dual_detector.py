@@ -14,6 +14,9 @@ class DualDetectorTests(unittest.TestCase):
     def test_models_use_separate_cores_and_run_concurrently(self):
         cfg = Config()
         cfg.package_model_path = "parcel.rknn"
+        cfg.conf = 0.35
+        cfg.package_conf = 0.25
+        cfg.package_person_conf = 0.2
         barrier = threading.Barrier(2)
         frame = np.zeros((360, 640, 3), dtype=np.uint8)
         person = Detection(0, "person", 0.9, (20, 40, 100, 300))
@@ -37,6 +40,8 @@ class DualDetectorTests(unittest.TestCase):
             try:
                 self.assertEqual(factory.call_args_list[0].kwargs["core_mask"], 1)
                 self.assertEqual(factory.call_args_list[1].kwargs["core_mask"], 2)
+                self.assertEqual(factory.call_args_list[0].args[2], 0.2)
+                self.assertEqual(factory.call_args_list[1].args[2], 0.25)
                 self.assertEqual(svc.detect_frame(frame), [person, parcel])
                 self.assertIsNone(svc.detector_error)
                 self.assertIsNone(svc.package_detector_error)
@@ -50,6 +55,25 @@ class DualDetectorTests(unittest.TestCase):
             cfg = Config()
         self.assertEqual(cfg.package_model_path, "")
         self.assertEqual(cfg.package_class_names, ("suitcase", "backpack", "handbag"))
+
+    def test_tiled_package_inference_is_used_when_enabled(self):
+        cfg = Config()
+        cfg.package_tiles = True
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        parcel = Detection(1, "good-parcel", 0.8, (300, 180, 340, 220))
+        with tempfile.TemporaryDirectory() as path:
+            cfg.data_dir = path
+            with patch("vision.app.Detector") as factory:
+                human, package = Mock(), Mock()
+                factory.side_effect = [human, package]
+                human.detect.return_value = []
+                package.detect_tiled.return_value = [parcel]
+                svc = VisionService(cfg)
+            try:
+                self.assertEqual(svc.detect_frame(frame), [parcel])
+                package.detect_tiled.assert_called_once_with(frame)
+            finally:
+                svc.close()
 
     def test_mismatched_package_labels_report_error(self):
         cfg = Config()
@@ -108,6 +132,30 @@ class DualDetectorTests(unittest.TestCase):
             detections = svc.detect_frame(np.zeros((360, 640, 3), dtype=np.uint8))
             self.assertEqual(detections, [person, parcel])
             svc.close()
+
+    def test_weak_person_filters_large_false_box_without_triggering_person_events(self):
+        cfg = Config()
+        cfg.package_model_path = "parcel.rknn"
+        cfg.conf = 0.6
+        cfg.package_person_conf = 0.2
+        cfg.package_class_names = ("defect-parcel", "good-parcel")
+        person = Detection(0, "person", 0.254, (360, 205, 500, 295))
+        false_package = Detection(0, "defect-parcel", 0.6, (355, 175, 635, 335))
+        real_package = Detection(1, "good-parcel", 0.4, (130, 180, 230, 240))
+        with tempfile.TemporaryDirectory() as path:
+            cfg.data_dir = path
+            with patch("vision.app.Detector") as factory:
+                human, package = Mock(), Mock()
+                factory.side_effect = [human, package]
+                human.detect.return_value = [person]
+                package.detect.return_value = [false_package, real_package]
+                svc = VisionService(cfg)
+            try:
+                detections = svc.detect_frame(np.zeros((360, 640, 3), dtype=np.uint8))
+                self.assertEqual(detections, [real_package])
+                self.assertNotIn("person.detected", [event.kind for event in svc.rules.update(detections, 640, 360, 100)])
+            finally:
+                svc.close()
 
     def test_only_people_and_packages_reach_preview(self):
         cfg = Config()

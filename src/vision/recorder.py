@@ -222,7 +222,7 @@ class ContinuousRecorder:
         data_dir: str,
         size: tuple[int, int],
         fps: int,
-        segment_seconds: float = 300.0,
+        segment_seconds: float = 60.0,
         max_bytes: int = 1 * 1024 * 1024 * 1024,
     ) -> None:
         self.data_dir = data_dir

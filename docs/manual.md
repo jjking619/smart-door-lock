@@ -19,7 +19,7 @@
 桌面系统统一入口（使用项目已有虚拟环境）：
 
 ```bash
-cd /home/pi/smart-door-lock
+cd smart-door-lock  # 按实际 clone 位置调整
 .venv/bin/python main.py
 ```
 
@@ -59,7 +59,7 @@ Quectel Pi M2（RK3576）出厂内核未编译 CH340/CH341 驱动，CH340 USB-TT
 开发所需依赖统一列在根目录 `requirements.txt`；安装项目时由 `pyproject.toml` 自动读取：
 `uv pip install --python .venv/bin/python -e .`。
 systemd 部署可使用 `deploy/systemd/fingerprintd.service` 与
-`deploy/systemd/fingerprintd.env.example`；桌面入口发现 8085 上已有 fingerprintd 时会复用它。
+`deploy/systemd/doorlock.env.example`；桌面入口发现 8085 上已有 fingerprintd 时会复用它。
 
 ### 指纹开锁（lockd）
 
@@ -67,7 +67,7 @@ systemd 部署可使用 `deploy/systemd/fingerprintd.service` 与
 "这个人能不能开、开多久"。识别成功但未登记、分数不够、重复按压都会被拒绝并记入
 `data/events.jsonl`，界面会直接显示拒绝原因。
 
-默认指纹策略（都在 `deploy/systemd/lockd.env.example` 里可改）：
+默认指纹策略（都在 `deploy/systemd/doorlock.env.example` 里可改）：
 
 | 策略 | 默认 | 说明 |
 | --- | --- | --- |
@@ -99,7 +99,8 @@ Pin33 是 GPIO2_D3 / PWM2_CH3，对应控制器 **`2ade3000.pwm`**。
 SG90 使用 **50Hz**（周期 20,000,000ns），默认 0° 为 500µs、90° 为 1500µs；
 官方文档的 1000Hz/50% 占空比是回环测试，不能用来控制舵机。
 
-PWM sysfs 默认只有管理员可写，**首次使用必须执行一次** `sudo bash deploy/install_pwm_access.sh pi`，
+PWM sysfs 默认只有管理员可写，`bash install.sh` 已包含 PWM 授权；
+未运行完整安装时，单独执行 `sudo bash deploy/install_pwm_access.sh pi`，
 安装开机授权服务，只预先导出 Pin33 对应的 `pwm0` 并授权四个控制属性，
 不会输出波形，不会开放所有 PWM 或 GPIO。若受沙箱限制，需先由管理员调整沙箱策略。
 安装完成后，正常用户直接运行 `.venv/bin/python main.py` 即可（无需以管理员身份运行整个程序）；
@@ -112,8 +113,8 @@ bash deploy/run_servo_doorlock.sh --lock-only
 ```
 
 `main.py` 与此入口都默认使用 `LOCK_DRIVER=servo`；无硬件调试时设置 `LOCK_DRIVER=mock`。
-系统服务部署则将 `/etc/doorlock/lockd.env` 的 `LOCK_DRIVER` 改为 `servo`，
-其他参数参考 `deploy/systemd/lockd.env.example`。切换驱动前须停止旧的 lockd，
+系统服务部署则将 `deploy/systemd/doorlock.env` 的 `LOCK_DRIVER` 改为 `servo`，
+其他参数参考 `deploy/systemd/doorlock.env.example`。切换驱动前须停止旧的 lockd，
 避免桌面入口复用旧的模拟服务。
 可通过 `LOCK_SERVO_LOCKED_ANGLE`、`LOCK_SERVO_UNLOCKED_ANGLE`、
 `LOCK_SERVO_MIN_US`、`LOCK_SERVO_MAX_US` 和 `LOCK_SERVO_MOVE_S` 校准；
@@ -159,7 +160,7 @@ systemd 管理的健康后端会继续复用；异常服务会提示通过服务
 
 语音模式仍使用终端输入模拟门铃，暂不自动随桌面启动。SSH 启动 GUI 需要有效的
 `DISPLAY` / `XAUTHORITY`；启动器不会修改系统显示授权。可从任意目录使用绝对入口路径：
-`/home/pi/smart-door-lock/.venv/bin/python /home/pi/smart-door-lock/main.py`。
+`<项目路径>/.venv/bin/python <项目路径>/main.py`。
 
 Python 依赖统一列在根目录 `requirements.txt`；`pyproject.toml` 从该文件读取运行依赖。
 NPU runtime 不在通用清单内，需按板端驱动版本单独安装。
@@ -168,7 +169,7 @@ NPU runtime 不在通用清单内，需按板端驱动版本单独安装。
 sudo apt install -y python3-opencv libopenblas-dev \
   gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 
-cd /home/pi/smart-door-lock
+cd smart-door-lock  # 按实际 clone 位置调整
 uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -e .
 
@@ -180,7 +181,7 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 
 # 2) 接 USB 摄像头
 .venv/bin/python -m vision.app
-#    浏览器打开 http://<板子IP>:8081/stream
+#    浏览器打开 http://<板子IP>:8083/stream
 
 # 3) 语音：先验证 Coze 连通性
 export COZE_API_TOKEN=pat_xxx

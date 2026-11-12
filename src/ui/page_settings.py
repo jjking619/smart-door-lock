@@ -302,8 +302,8 @@ class SettingsPage(QWidget):
         tip = QLabel(
             "ROI、停留阈值、布防时段等属于 visiond / lockd 的配置，"
             "通过 systemd 环境变量下发，界面不做伪造写入。\n"
-            "修改方式：编辑 /etc/doorlock/visiond.env 后 "
-            "sudo systemctl restart visiond"
+            "修改方式：编辑 deploy/systemd/doorlock.env 后 "
+            "重启对应的 systemd 服务（用户级用 systemctl --user）"
         )
         tip.setWordWrap(True)
         tip.setStyleSheet(f"color:{theme.TEXT_DIM};font-size:14px;line-height:150%;")
@@ -317,11 +317,11 @@ class SettingsPage(QWidget):
             ("推理 VISION_MODEL", "models/yolo11n.rknn"),
             ("推理间隔", "每 3 帧"),
             ("刻画区域 doorstep_poly", "0.05,0.10 → 0.95,1.02"),
-            ("包裹区域 ground_poly", "0.05,0.55 → 0.98,0.98"),
+            ("包裹检测范围", "默认全画面（VISION_GROUND_POLY 可调整）"),
             ("异常逗留阈值", "10 s（夜间 5 s）"),
             ("包裹静止阈值", "10 s"),
             ("录像保留", "事件前 10 s + 后 20 s"),
-            ("在线录像", "手动启停；5 分钟分段，默认约 5 GB 上限"),
+            ("在线录像", "手动启停；1 分钟分段，默认约 5 GB 上限"),
         ]
         for label, value in backend_rows:
             v = QLabel(value)

@@ -12,7 +12,7 @@ import os
 import threading
 import time
 
-from event_log import append_event
+from event_log import append_event, trim_event_log
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,10 @@ class EventBus:
         self._lock = threading.Lock()
         self._jsonl = os.path.join(data_dir, "events.jsonl")
         os.makedirs(data_dir, exist_ok=True)
+        try:
+            trim_event_log(self._jsonl)
+        except OSError:
+            logger.exception("清理超出上限的旧事件失败")
 
         if not host:
             logger.info("未配置 MQTT_HOST，事件仅本地落盘")

@@ -8,12 +8,21 @@ HEADERS="${KERNEL_HEADERS:-/usr/src/linux-headers-6.1-rockchip}"
 WORK="${CH341_BUILD_DIR:-${TMPDIR:-/tmp}/ch341-build}"
 
 if [ -e /sys/module/ch341 ]; then
+    echo ch341 | sudo tee /etc/modules-load.d/ch341.conf >/dev/null
     echo "ch341 driver already loaded"
+    exit 0
+fi
+
+# Prefer the installed kernel module; only build when the image lacks it.
+if sudo modprobe ch341; then
+    echo ch341 | sudo tee /etc/modules-load.d/ch341.conf >/dev/null
+    echo "ch341 driver loaded; configured to load at boot"
     exit 0
 fi
 
 if ! grep -q "\"$KVER\"" "$HEADERS/include/generated/utsrelease.h" 2>/dev/null; then
     echo "Kernel headers in $HEADERS do not match running kernel $KVER" >&2
+    echo "Install matching kernel headers or set KERNEL_HEADERS, then re-run install.sh." >&2
     exit 1
 fi
 

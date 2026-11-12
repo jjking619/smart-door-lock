@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/smart-door-lock
-EnvironmentFile=-/etc/doorlock/audiood.env
-ExecStart=/home/pi/smart-door-lock/.venv/bin/python /home/pi/smart-door-lock/main.py --audio-only
+User=@SERVICE_USER@
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=@PROJECT_ROOT@/deploy/systemd/doorlock.env
+ExecStart=@PROJECT_ROOT@/.venv/bin/python @PROJECT_ROOT@/main.py --audio-only
 Restart=always
 RestartSec=3
 

@@ -55,10 +55,10 @@ Coze(6s, 重试1次) → 熔断60s → 本地小模型(2s) → 固定话术 → 
 ## 快速开始
 
 ```bash
-cd /home/pi/smart-door-lock
+cd smart-door-lock  # 按实际 clone 位置调整
 
 # 0) 先验证 Coze 配置（强烈建议，能省掉猜错误码的时间）
-set -a; . ./deploy/systemd/audiood.env; set +a
+set -a; . ./deploy/systemd/doorlock.env; set +a
 .venv/bin/python -m audio.coze_smoke_test --list
 #   ↑ 没有工作流会显示 "工作流: 0 个"，先去 coze.cn 建一个并「发布」
 #   ↑ 有工作流时会把 id 打出来，填进 COZE_WORKFLOW_ID

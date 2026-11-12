@@ -163,11 +163,11 @@ def create_app(svc: VisionService) -> web.Application:
         return resp
 
     async def events(_req: web.Request) -> web.Response:
-        limit = int(_req.query.get("limit", "50"))
+        limit = max(1, min(int(_req.query.get("limit", "1000")), 1000))
         path = Path(cfg.data_dir) / "events.jsonl"
         if not path.exists():
             return web.json_response({"items": []})
-        lines = path.read_text(encoding="utf-8").splitlines()[-max(1, min(limit, 500)):]
+        lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
         items = []
         for line in lines:
             try:
@@ -292,7 +292,7 @@ async def serve(svc: VisionService) -> None:
     app = create_app(svc)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    port = int(os.getenv("VISION_HTTP_PORT", "8081"))
+    port = int(os.getenv("VISION_HTTP_PORT", "8083"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     logger.info("HTTP 预览已启动 :%d", port)

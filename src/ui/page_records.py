@@ -75,14 +75,18 @@ class _ListDelegate(QStyledItemDelegate):
                        f"{payload['count']} 条", theme.TEXT_MUTED, 13, align=Qt.AlignmentFlag.AlignRight)
         elif self._recordings:
             rec = payload["record"]
-            thumb = QRect(r.left() + 6, r.top() + 6, 78, 44)
-            pixmap = self._page._thumb_cache.get(rec.snapshot)
-            if pixmap:
-                painter.drawPixmap(thumb, pixmap)
+            if rec.kind == "continuous":
+                x = r.left() + 14
             else:
-                painter.fillRect(thumb, QColor("#2A2438" if rec.kind == "event" else "#1F3230"))
-                _draw_text(painter, thumb, "无图", theme.TEXT_MUTED, 14, align=Qt.AlignmentFlag.AlignHCenter)
-            x = thumb.right() + 11
+                thumb = QRect(r.left() + 6, r.top() + 6, 78, 44)
+                pixmap = self._page._thumb_cache.get(rec.snapshot)
+                if pixmap:
+                    painter.drawPixmap(thumb, pixmap)
+                else:
+                    painter.fillRect(thumb, QColor("#2A2438"))
+                    _draw_text(painter, thumb, "无图", theme.TEXT_MUTED, 14,
+                               align=Qt.AlignmentFlag.AlignHCenter)
+                x = thumb.right() + 11
             width = max(0, r.right() - x - 5)
             _draw_text(painter, QRect(x, r.top() + 5, width, 24), rec.title, rec.color, 15, bold=True)
             meta = f"{rec.kind_text} · {rec.date_text} {rec.time_text} · {_human_size(rec.size)}"
@@ -409,7 +413,7 @@ class RecordsPage(QWidget):
                     self._reset_player("记录读取失败，请刷新重试")
 
         if tab == "events":
-            self._api.events(120, on_ok=success, on_err=failure)
+            self._api.events(1000, on_ok=success, on_err=failure)
         else:
             self._api.recordings(300, "all", on_ok=success, on_err=failure)
 
@@ -644,7 +648,10 @@ class RecordsPage(QWidget):
             payload = item.data(Qt.ItemDataRole.UserRole)
             if payload["type"] != "record":
                 continue
-            path = payload["record"].snapshot
+            record = payload["record"]
+            if record.kind == "continuous":
+                continue
+            path = record.snapshot
             if not path:
                 continue
             if path in self._thumb_cache:

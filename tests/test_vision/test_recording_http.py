@@ -50,6 +50,21 @@ class RecordingHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 400)
         self.svc.request_recording.assert_not_called()
 
+    async def test_events_endpoint_returns_latest_up_to_1000(self):
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            path.write_text("".join(f'{{"index": {i}}}\n' for i in range(1200)))
+            self.svc.cfg.data_dir = tmp
+            with patch("vision.http.TOKEN", ""):
+                response = await self.client.get("/events?limit=1000")
+            data = await response.json()
+        self.assertEqual(len(data["items"]), 1000)
+        self.assertEqual(data["items"][0]["index"], 1199)
+        self.assertEqual(data["items"][-1]["index"], 200)
+
 
 if __name__ == "__main__":
     unittest.main()

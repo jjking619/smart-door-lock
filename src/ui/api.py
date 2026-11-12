@@ -550,7 +550,7 @@ class ApiClient(QObject):
     ) -> None:
         self.fingerprint_post("/cancel", {}, on_ok, on_err)
 
-    def events(self, limit: int = 60, on_ok: Callable[[list[Event]], None] | None = None,
+    def events(self, limit: int = 1000, on_ok: Callable[[list[Event]], None] | None = None,
                on_err: Callable[[str], None] | None = None) -> None:
         def handle(data: Any) -> None:
             items = (data or {}).get("items") if isinstance(data, dict) else data
@@ -581,7 +581,7 @@ class ApiClient(QObject):
     def snapshot_url(self) -> str:
         return self.url("/snapshot.jpg").toString()
 
-    # ---------------- 尚未实现的后端能力 ----------------
+    # ---------------- 门锁、对讲与录像控制 ----------------
     def unlock(self, on_ok: Callable[[Any], None] | None = None,
                on_err: Callable[[str], None] | None = None) -> None:
         """POST /unlock —— 由 lockd 落地，UI 只发请求不持有钥匙。"""
@@ -589,7 +589,7 @@ class ApiClient(QObject):
 
     def talk(self, on: bool, on_ok: Callable[[Any], None] | None = None,
              on_err: Callable[[str], None] | None = None) -> None:
-        """约定接口：POST /talk {on} —— 由 audiood 落地，音频永远不经过 UI 进程。"""
+        """POST /talk {on} —— 由 audiood 落地，音频永远不经过 UI 进程。"""
         self.post_json("/talk", {"on": on}, on_ok, on_err)
 
     def recording(self, on: bool, on_ok: Callable[[Any], None] | None = None,
@@ -605,10 +605,9 @@ class ApiClient(QObject):
 
 
 class CapabilityProbe(QObject):
-    """探测后端是否支持 /unlock、/talk。
+    """探测 lockd/audiood 的 /unlock、/talk 是否可达。
 
-    没实现时按钮保持可见但置灰，并提示"后端未接入" —— 比隐藏按钮好：
-    用户能看出这是功能没做，而不是界面坏了。
+    后端未运行或不可达时按钮保持可见但置灰，便于用户区分后端未启动和界面故障。
     """
 
     changed = Signal(bool, bool)   # unlock_ok, talk_ok

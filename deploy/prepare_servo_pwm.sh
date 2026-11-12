@@ -2,7 +2,7 @@
 # 由管理员安装的开机服务执行；只授权 Pin33 对应的 PWM 通道，不输出波形。
 set -euo pipefail
 
-USER_NAME="${1:-pi}"
+USER_NAME="${1:?缺少用户名参数}"
 id "$USER_NAME" >/dev/null
 CHIP=""
 for ((attempt=0; attempt<100; attempt++)); do

@@ -148,6 +148,49 @@ class DetectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "类别数"):
             detector.detect(np.zeros((640, 640, 3), dtype=np.uint8))
 
+    def test_lower_confidence_can_retain_package_candidates(self) -> None:
+        output = np.zeros((1, 6, 8400), dtype=np.float32)
+        output[0, :, 0] = (320, 320, 20, 20, 0.1, 0.3)
+        detector = _detector([output])
+        detector.names = ["defect-parcel", "good-parcel"]
+        image = np.zeros((640, 640, 3), dtype=np.uint8)
+
+        self.assertEqual(detector.detect(image), [])
+        detector.conf = 0.25
+        self.assertEqual(detector.detect(image)[0].name, "good-parcel")
+
+    def test_tiled_detection_maps_and_merges_overlapping_boxes(self) -> None:
+        detector = _detector([])
+        full = Detection(1, "good-parcel", 0.6, (300, 180, 340, 220))
+        left = Detection(1, "good-parcel", 0.9, (300, 180, 359, 220))
+        right = Detection(1, "good-parcel", 0.8, (20, 180, 60, 220))
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        detector.detect = Mock(side_effect=[[full], [left], [right]])
+
+        detections = detector.detect_tiled(frame)
+
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0].box, (300, 180, 340, 220))
+        self.assertEqual(detections[0].conf, 0.8)
+        self.assertEqual([call.args[0].shape for call in detector.detect.call_args_list],
+                         [(360, 640, 3), (360, 360, 3), (360, 360, 3)])
+
+    def test_tiled_detection_handles_portrait_and_square_frames(self) -> None:
+        detector = _detector([])
+        parcel = Detection(1, "good-parcel", 0.8, (20, 30, 60, 70))
+        detector.detect = Mock(side_effect=[[], [], [parcel]])
+        detections = detector.detect_tiled(np.zeros((640, 360, 3), dtype=np.uint8))
+        self.assertEqual(detections[0].box, (20, 310, 60, 350))
+        detector.detect = Mock(return_value=[parcel])
+        self.assertEqual(detector.detect_tiled(np.zeros((360, 360, 3), dtype=np.uint8)), [parcel])
+        self.assertEqual(detector.detect.call_count, 1)
+
+    def test_tiled_detection_rejects_large_crop_only_candidates(self) -> None:
+        detector = _detector([])
+        large = Detection(0, "defect-parcel", 0.8, (10, 100, 350, 300))
+        detector.detect = Mock(side_effect=[[], [large], []])
+        self.assertEqual(detector.detect_tiled(np.zeros((360, 640, 3), dtype=np.uint8)), [])
+
 
 if __name__ == "__main__":
     unittest.main()

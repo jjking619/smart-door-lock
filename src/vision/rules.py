@@ -92,7 +92,9 @@ def is_false_package(det: Detection, persons: list[Detection], w: int, h: int, c
     cy = (det.box[1] + det.box[3]) / 2
     for p in persons:
         body_limit = p.box[1] + (p.box[3] - p.box[1]) * _PERSON_BODY_FRACTION
-        if cy < body_limit and _covered_by(det.box, p.box) >= cfg.package_person_overlap:
+        if cy < body_limit and max(
+            _covered_by(det.box, p.box), _covered_by(p.box, det.box)
+        ) >= cfg.package_person_overlap:
             return True
     return False
 

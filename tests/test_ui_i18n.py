@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from ui import i18n, theme
 from ui.api import parse_event
@@ -99,8 +99,72 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(page.tabs.tabText(0), "Fingerprints")
         self.assertEqual(page.tabs.tabText(1), "Connection / display")
         self.assertEqual(page.tabs.tabText(2), "Diagnostics / parameters")
+        for label in page.findChildren(QLabel):
+            label.ensurePolished()
+        labels = {label.text() for label in page.findChildren(QLabel)}
+        self.assertIn("Parcel detection area", labels)
+        self.assertIn("Full frame by default (configurable via VISION_GROUND_POLY)", labels)
+        self.assertIn("Manual; 1-min segments, ~5 GB cap", labels)
         page._on_fingerprint_templates([{"id": 9, "registered": False}])
         self.assertIn("Unregistered template", page.fingerprint_list.item(0).text())
+
+    def test_fingerprint_enrollment_status_and_prompts_render_english(self):
+        i18n.set_lang("en")
+        page = SettingsPage(SimpleNamespace(base_url="http://127.0.0.1:8083", token=""))
+        self.addCleanup(page.close)
+        base = {
+            "service": "fingerprintd",
+            "connected": True,
+            "device": "/dev/ttyUSB0",
+            "library_size": 300,
+            "template_count": 0,
+            "action": "enroll",
+        }
+        cases = (
+            ("请按压手指（第 1 次）", "Place your finger (attempt 1)"),
+            ("第 1 次采集成功，请移开手指", "First scan captured, lift your finger"),
+            (
+                "两次按压不一致，请重新按压手指（第 2 次）",
+                "Presses differ, place your finger again (attempt 2)",
+            ),
+            ("正在合并指纹特征", "Merging features"),
+            ("正在保存指纹模板", "Saving template"),
+        )
+        for step, expected in cases:
+            with self.subTest(step=step):
+                page._on_fingerprint_health({**base, "step": step})
+                self.assertIn(expected, page.fingerprint_status.text())
+                self.assertNotRegex(page.fingerprint_status.text(), r"[\u3400-\u9fff]")
+        page._on_fingerprint_health({
+            **base,
+            "step": "请按压手指（第 1 次）",
+        })
+        self.assertEqual(
+            page.fingerprint_status.text(),
+            "AS608 online · /dev/ttyUSB0 · templates used 0/300\nPlace your finger (attempt 1)",
+        )
+
+        page._on_fingerprint_health({
+            **base,
+            "action": None,
+            "error": "有效特征点太少或按压面积太小",
+        })
+        self.assertIn(
+            "Last operation failed: Too few feature points or finger area too small",
+            page.fingerprint_status.text(),
+        )
+        self.assertNotRegex(page.fingerprint_status.text(), r"[\u3400-\u9fff]")
+
+        page._on_fingerprint_health({
+            **base,
+            "action": None,
+            "notice": "指纹录入成功：张三（编号 7）",
+        })
+        self.assertIn("Fingerprint enrolled: 张三 (ID 7)", page.fingerprint_status.text())
+        self.assertNotRegex(
+            page.fingerprint_status.text().replace("张三", ""),
+            r"[\u3400-\u9fff]",
+        )
 
 
 if __name__ == "__main__":

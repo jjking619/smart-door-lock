@@ -3,7 +3,7 @@
 ## 用法
 
     # 创建或更新同名智能体 → 发布到 API 渠道 → 把 bot_id 写回配置文件
-    .venv/bin/python -m audio.coze_setup --write-env deploy/systemd/audiood.env
+    .venv/bin/python -m audio.coze_setup --write-env deploy/systemd/doorlock.env
 
     # 只看会做什么，不落盘
     .venv/bin/python -m audio.coze_setup --dry-run

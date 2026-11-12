@@ -139,7 +139,9 @@ class VisionService:
         self.detector_error: str | None = None
         try:
             self.detector = Detector(
-                cfg.model_path, cfg.model_input, cfg.conf, cfg.nms, core_mask=1
+                cfg.model_path, cfg.model_input,
+                min(cfg.conf, cfg.package_person_conf) if cfg.package_model_path else cfg.conf,
+                cfg.nms, core_mask=1,
             )
             self.detector.set_names(cfg.model_class_names or _default_names())
             logger.info("检测器就绪 backend=%s", self.detector.backend)
@@ -159,7 +161,7 @@ class VisionService:
                 ):
                     raise ValueError("包裹检测类别与包裹模型类别不匹配")
                 self.package_detector = Detector(
-                    cfg.package_model_path, cfg.model_input, cfg.conf, cfg.nms,
+                    cfg.package_model_path, cfg.model_input, cfg.package_conf, cfg.nms,
                     pad_color=114, core_mask=2,
                 )
                 self.package_detector.set_names(list(cfg.package_model_class_names))
@@ -175,10 +177,14 @@ class VisionService:
 
     def detect_frame(self, frame: np.ndarray) -> list[Detection]:
         detections: list[Detection] = []
+        weak_persons: list[Detection] = []
+        package_detect = (
+            self.package_detector.detect_tiled if self.cfg.package_tiles else self.package_detector.detect
+        ) if self.package_detector is not None else None
         # Submit the parcel model first so both cores process the same frame concurrently.
         package_future = (
-            self._inference_executor.submit(self.package_detector.detect, frame)
-            if self._inference_executor is not None and self.package_detector is not None else None
+            self._inference_executor.submit(package_detect, frame)
+            if self._inference_executor is not None and package_detect is not None else None
         )
         for label, detector in (("人员", self.detector), ("包裹", self.package_detector)):
             if detector is None:
@@ -186,6 +192,8 @@ class VisionService:
             try:
                 if label == "包裹" and package_future is not None:
                     found = package_future.result()
+                elif label == "包裹" and package_detect is not None:
+                    found = package_detect(frame)
                 else:
                     found = detector.detect(frame)
                 if label == "包裹":
@@ -196,14 +204,24 @@ class VisionService:
                     if not self.cfg.package_model_path:
                         allowed_names += self.cfg.package_class_names
                     self.detector_error = None
-                detections.extend(d for d in found if d.name in allowed_names)
+                    weak_persons.extend(
+                        d for d in found
+                        if d.name in self.cfg.person_class_names and d.conf < self.cfg.conf
+                    )
+                detections.extend(
+                    d for d in found
+                    if d.name in allowed_names and (label == "包裹" or d.conf >= self.cfg.conf)
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("%s检测推理失败: %s", label, exc)
                 if label == "包裹":
                     self.package_detector_error = str(exc)
                 else:
                     self.detector_error = str(exc)
-        return filter_package_detections(detections, frame.shape[1], frame.shape[0], self.cfg)
+        filtered = filter_package_detections(
+            detections + weak_persons, frame.shape[1], frame.shape[0], self.cfg
+        )
+        return [d for d in filtered if d not in weak_persons]
 
     # ------------------------------------------------------------------
     async def run(self) -> None:

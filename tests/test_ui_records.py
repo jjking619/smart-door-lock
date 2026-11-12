@@ -7,10 +7,10 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QStyleOptionViewItem
 
 from ui import theme
 from ui.api import parse_event, parse_recording
@@ -226,6 +226,49 @@ class RecordsPageTests(unittest.TestCase):
             api.image_requests[1][1](bytes(data))
         self.assertFalse(page._thumb_cache)
         page.close()
+
+    def test_continuous_recordings_hide_thumbnails_but_events_keep_them(self):
+        api = DeferredApi()
+        page = RecordsPage(api)
+        self.addCleanup(page.close)
+        page.resize(1000, 600)
+        page.show()
+        page._set_tab("recordings")
+        continuous = parse_recording({
+            "path": "recordings/continuous/example.mp4",
+            "kind": "continuous",
+            "snapshot": "snapshots/continuous.jpg",
+        })
+        event = parse_recording({
+            "path": "clips/example.mp4",
+            "kind": "event",
+            "snapshot": "snapshots/event.jpg",
+        })
+        api.recording_requests[0][0]([continuous, event])
+        self.wait_for(lambda: bool(api.image_requests))
+        self.assertEqual([request[0] for request in api.image_requests], ["snapshots/event.jpg"])
+
+        delegate = page.recordings_list.itemDelegate()
+        for row, expected_x, has_placeholder in ((1, 14, False), (2, 94, True)):
+            with self.subTest(row=row):
+                index = page.recordings_list.model().index(row, 0)
+                option = QStyleOptionViewItem()
+                option.rect = page.recordings_list.visualRect(index)
+                option.widget = page.recordings_list
+                image = QImage(option.rect.size(), QImage.Format.Format_ARGB32)
+                image.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(image)
+                with patch.object(page_records_module, "_draw_text") as draw:
+                    delegate.paint(painter, option, index)
+                painter.end()
+                texts = [call.args[2] for call in draw.call_args_list]
+                self.assertEqual("无图" in texts, has_placeholder)
+                title = next(call for call in draw.call_args_list
+                             if call.args[2] == ("在线录像" if row == 1 else "事件片段"))
+                self.assertEqual(title.args[1].left() - option.rect.left(), expected_x)
+
+        page._on_recordings_item_clicked(page.recordings_list.item(1))
+        self.assertEqual(page._current_record.path, continuous.path)
 
     def test_navigation_does_not_preload_or_duplicate_inflight_request(self):
         api = DeferredApi()

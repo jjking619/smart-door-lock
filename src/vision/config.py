@@ -59,6 +59,9 @@ class Config:
     )
     model_input: int = _i("VISION_MODEL_INPUT", 640)
     conf: float = _f("VISION_CONF", 0.35)
+    package_conf: float = _f("VISION_PACKAGE_CONF", 0.35)
+    package_person_conf: float = _f("VISION_PACKAGE_PERSON_CONF", 0.2)
+    package_tiles: bool = os.getenv("VISION_PACKAGE_TILES", "0") == "1"
     nms: float = _f("VISION_NMS", 0.45)
     infer_every_n: int = _i("VISION_INFER_EVERY_N", 3)  # 每 N 帧跑一次推理
     model_class_names: tuple[str, ...] = field(default_factory=lambda: _names("VISION_CLASS_NAMES"))

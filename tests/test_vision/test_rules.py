@@ -56,6 +56,10 @@ class PackageRuleTests(unittest.TestCase):
         torso = Detection(0, "backpack", 0.9, (290, 140, 350, 220))
         self.assertFalse(self._reports_package([self.person, torso]))
 
+    def test_large_package_box_enclosing_person_is_ignored(self) -> None:
+        false_package = Detection(0, "backpack", 0.9, (200, 60, 480, 250))
+        self.assertFalse(self._reports_package([self.person, false_package]))
+
     def test_package_at_person_feet_is_still_reported(self) -> None:
         self.assertTrue(self._reports_package([self.person, self.parcel]))
 

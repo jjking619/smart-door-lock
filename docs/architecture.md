@@ -13,7 +13,7 @@
 │                                                                     │
 │  ┌───────────────────────────┐        ┌───────────────────────────┐ │
 │  │  visiond  (systemd)       │        │  audiood  (systemd)       │ │
-│  │  :8081 HTTP               │        │  无 HTTP                  │ │
+│  │  :8083 HTTP               │        │  无 HTTP                  │ │
 │  │                           │        │                           │ │
 │  │  录像 / 入侵 / 快递        │        │  门铃对讲 / 自动应答       │ │
 │  └──────────┬────────────────┘        └──────────┬────────────────┘ │
@@ -112,7 +112,7 @@ _person_first_seen   人形首次进入 doorstep ROI 的单调时刻
 _person_last_seen    最后一次在 ROI 内
 _person_box          用于快照框
 _visit_reported      本次到访是否已告警（防重复）
-_tracks[]            地面包裹的最近邻跟踪、稳定时间和上报状态
+_tracks[]            包裹的最近邻跟踪、稳定时间和上报状态
 ```
 
 **入侵判定**
@@ -127,12 +127,13 @@ person 类 且 框底边中点 ∈ doorstep_poly
 **快递判定**
 
 ```
-ground_poly 内检测到 package_class 物体
+package_class 物体的框底边中点 ∈ ground_poly（默认全画面）
     └─ 连续识别且位置稳定 ≥ static_seconds
          └─ 同一 track 尚未上报 → package.detected
 已上报 track 消失 ≥ dedupe_seconds → 允许重新上报
 ```
 
+默认检测范围包含画面上部、下部及边界，不限于地面；`VISION_GROUND_POLY` 保留为可选的范围配置。
 无需人员进出；启动时已有的包裹也会上报，重启后跟踪状态不保留。
 检测中断或明显移动会重新计算稳定时间，但已上报状态会保留到消失超时。
 
@@ -140,7 +141,7 @@ ground_poly 内检测到 package_class 物体
 
 ## 3. visiond：HTTP 接口
 
-全部在 `http.py`，aiohttp，默认 `:8081`。
+全部在 `http.py`，aiohttp，默认 `:8083`。
 
 | 方法 | 路径 | 返回 | 说明 |
 | --- | --- | --- | --- |
@@ -310,13 +311,14 @@ MQTT 主题：`lock/event/<type>`，QoS 1，同时追加到 `data/events.jsonl`�
 
 ```
 data/
-├── events.jsonl                    事件流水（永不删除，用于审计）
+├── events.jsonl                    最新 1000 条事件（超出后删除最旧记录）
 ├── snapshots/YYYYMMDD/HHMMSS_mmm.jpg
 └── clips/YYYYMMDD/HHMMSS_mmm.mp4   事件前 10 s + 后 20 s
 ```
 
 容量估算：30 s 片段 × 50 次/天 ≈ 3 GB/天 → 64 GB eMMC 可存约 20 天。
-**自动清理尚未实现**（见待办），上线前必须加，否则会写满 eMMC。
+事件日志仅保留最新 1000 条；连续录像有独立的容量上限。事件录像片段和抓拍目前
+没有自动清理策略，仍会持续占用磁盘空间。
 
 ---
 
@@ -324,25 +326,37 @@ data/
 
 ```
 deploy/systemd/
-├── visiond.service              SupplementaryGroups=video render
+├── visiond.service              服务模板，SupplementaryGroups=video render
 │                                CPUQuota=300%  MemoryMax=1G
-├── visiond.env.example          VISION_SOURCE / ROI / MQTT ...
 ├── audiood.service              SupplementaryGroups=audio
 │                                CPUQuota=200%  MemoryMax=512M
-├── audiood.env.example          COZE_API_TOKEN / 超时 / 音频设备
 ├── fingerprintd.service         SupplementaryGroups=dialout
-├── fingerprintd.env.example     FINGERPRINT_SERIAL / 波特率
 ├── lockd.service                SupplementaryGroups=gpio（用 gpio 驱动时）
-└── lockd.env.example            LOCK_DRIVER / 引脚 / 策略阈值
+├── doorlock.env.example         四个服务共用：视觉 / 语音 / 指纹 / 锁体
+└── generated/                   按当前用户和项目路径生成的服务文件
 ```
 
 ```bash
-sudo install -d -m 700 /etc/doorlock
-sudo cp deploy/systemd/*.env.example /etc/doorlock/   # 改成 .env 并填密钥
-sudo chmod 600 /etc/doorlock/*.env
-sudo cp deploy/systemd/*.service /etc/systemd/system/
-sudo systemctl daemon-reloadsudo systemctl enable --now visiond audiood
+# 安装脚本会生成配置；移动项目后可用当前普通用户重新生成。
+python3 deploy/generate_systemd.py
+# 编辑 deploy/systemd/doorlock.env，填写 Coze 密钥和现场参数。
+sudo install -m 644 deploy/systemd/generated/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now visiond audiood
 ```
+
+四个服务保持独立，统一读取项目目录中的 `deploy/systemd/doorlock.env`；
+该文件不提交到 Git，生成脚本仅在文件不存在时以 600 权限创建，不修改已有配置。
+生成文件面向系统级 systemd；不要直接部署带占位符的模板。更换项目目录后须重新生成并安装服务文件。
+旧配置若使用其他设备的绝对数据目录，需手动调整 `VISION_DATA_DIR` 和 `FINGERPRINT_DATA_DIR`；
+新配置默认使用相对于项目目录的 `data`，无需修改密钥。
+旧部署应先将原有四份 env 的现场参数合并到该文件；同名公共变量只保留一份，
+不要用模板覆盖密钥。确认服务重启正常后再删除旧 env。
+修改配置后只需重启受影响的服务；用户级服务使用 `systemctl --user restart visiond audiood`，
+不要与系统级服务同时启用。按需启用 lockd / fingerprintd，部署不会自动开锁。
+直接运行 `main.py` 不会自动加载此文件；需要时先执行
+`set -a; . ./deploy/systemd/doorlock.env; set +a`。带空格、分号的值须加引号，
+同时保持 systemd EnvironmentFile 兼容写法，不使用 shell 展开或命令替换。
 
 `CPUQuota` 不是为了省电，是为了**保证对讲不卡**：视频编码吃满 CPU 会让
 WebRTC 音频抖动到无法通话。

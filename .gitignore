@@ -11,3 +11,4 @@ models/*.rknn
 models/*.onnx
 *.env
 !*.env.example
+deploy/systemd/generated/

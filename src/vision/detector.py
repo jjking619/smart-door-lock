@@ -10,6 +10,7 @@ RKNN 与 ONNX 的差别只在"预处理 + 后处理"，其余（letterbox、NMS�
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -213,6 +214,36 @@ class Detector:
             )
             for i in keep
         ]
+
+    def detect_tiled(self, bgr: np.ndarray) -> list[Detection]:
+        detections = self.detect(bgr)
+        height, width = bgr.shape[:2]
+        side = min(width, height)
+        long_side = max(width, height)
+        if side < 2 or long_side <= side:
+            return detections
+
+        intervals = max(1, math.ceil((long_side - side) / (side * 0.8)))
+        for index in range(intervals + 1):
+            offset = round(index * (long_side - side) / intervals)
+            left, top = (offset, 0) if width > height else (0, offset)
+            for detection in self.detect(bgr[top:top + side, left:left + side]):
+                x1, y1, x2, y2 = detection.box
+                if (detection.area > width * height * 0.05
+                    or (left > 0 and x1 <= 0) or (top > 0 and y1 <= 0)
+                    or (left + side < width and x2 >= side - 1)
+                    or (top + side < height and y2 >= side - 1)):
+                    continue
+                detections.append(Detection(
+                    detection.cls_id, detection.name, detection.conf,
+                    (x1 + left, y1 + top, x2 + left, y2 + top),
+                ))
+
+        if not detections:
+            return []
+        boxes = np.asarray([detection.box for detection in detections], dtype=np.float32)
+        scores = np.asarray([detection.conf for detection in detections], dtype=np.float32)
+        return [detections[index] for index in _nms(boxes, scores, self.nms)]
 
     def _decode_yolov5_heads(
         self, outputs: list[np.ndarray]

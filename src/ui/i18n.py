@@ -171,12 +171,15 @@ EN: dict[str, str] = {
     "采集源 VISION_SOURCE": "Source VISION_SOURCE", "推理 VISION_MODEL": "Model VISION_MODEL",
     "推理间隔": "Inference interval", "每 3 帧": "Every 3 frames",
     "刻画区域 doorstep_poly": "Doorstep zone doorstep_poly",
-    "包裹区域 ground_poly": "Parcel zone ground_poly", "异常逗留阈值": "Loitering threshold",
+    "包裹检测范围": "Parcel detection area",
+    "默认全画面（VISION_GROUND_POLY 可调整）": "Full frame by default (configurable via VISION_GROUND_POLY)",
+    "异常逗留阈值": "Loitering threshold",
     "10 s（夜间 5 s）": "10 s (night 5 s)", "包裹静止阈值": "Parcel still threshold",
     "录像保留": "Recording retention", "事件前 10 s + 后 20 s": "10 s before + 20 s after event",
-    "手动启停；5 分钟分段，默认约 5 GB 上限": "Manual; 5-min segments, ~5 GB cap",
+    "手动启停；1 分钟分段，默认约 5 GB 上限": "Manual; 1-min segments, ~5 GB cap",
     "诊断": "Diagnostics", "指纹服务不可用": "Fingerprint service unavailable",
-    "AS608 离线": "AS608 offline", "已占用": "used", "录入中…": "Enrolling…",
+    "AS608 在线": "AS608 online", "AS608 离线": "AS608 offline",
+    "已占用": "templates used", "编号": "ID", "录入中…": "Enrolling…",
     "请先填写姓名": "Please enter a name first", "姓名不能为空": "Name is required",
     "确定删除": "Delete", "的模块指纹模板吗？此操作不可撤销。": "'s fingerprint template? This cannot be undone.",
     "已应用": "Applied", "包裹检测": "parcel detection", "未加载模型：只有录像，没有检测事件": "No model loaded: recording only, no detection events",
@@ -186,8 +189,8 @@ EN: dict[str, str] = {
     "等待串口设备": "Waiting for serial device", "指纹操作进行中": "Fingerprint operation in progress",
     "录入未开始": "Enrollment not started", "取消失败": "Cancel failed", "保存失败": "Save failed",
     "删除失败": "Delete failed", "未加载": "Not loaded", "已禁用": "Disabled",
-    "ROI、停留阈值、布防时段等属于 visiond / lockd 的配置，通过 systemd 环境变量下发，界面不做伪造写入。\n修改方式：编辑 /etc/doorlock/visiond.env 后 sudo systemctl restart visiond":
-        "ROI, dwell thresholds and arming schedule are visiond / lockd settings delivered via systemd env files; the UI does not write them.\nTo change: edit /etc/doorlock/visiond.env then sudo systemctl restart visiond",
+    "ROI、停留阈值、布防时段等属于 visiond / lockd 的配置，通过 systemd 环境变量下发，界面不做伪造写入。\n修改方式：编辑 deploy/systemd/doorlock.env 后 重启对应的 systemd 服务（用户级用 systemctl --user）":
+        "ROI, dwell thresholds and arming schedule are visiond / lockd settings delivered via systemd environment variables; the UI does not write them.\nTo change: edit deploy/systemd/doorlock.env and restart the affected systemd service (use systemctl --user for user services).",
     # ---- 视频 ----
     "正在连接摄像头…": "Connecting to camera…",
     "画面已停止更新（超过 5 s）": "Video stalled (over 5 s)",
@@ -195,7 +198,18 @@ EN: dict[str, str] = {
     # ---- 后端（指纹 / 锁 / 对讲）常见状态 ----
     "准备中": "Preparing", "正在保存指纹模板": "Saving template",
     "正在合并指纹特征": "Merging features", "录入成功，请移开手指": "Enrolled, lift your finger",
+    "第 1 次采集成功，请移开手指": "First scan captured, lift your finger",
     "请按压手指": "Place your finger", "请移开手指": "Lift your finger",
+    "正在读取模块指纹列表": "Reading sensor fingerprints",
+    "有效特征点太少或按压面积太小": "Too few feature points or finger area too small",
+    "指纹太干或太淡，无法生成特征": "Finger too dry or faint to generate features",
+    "指纹太湿或太糊，无法生成特征": "Finger too wet or smudged to generate features",
+    "指纹图像太乱，无法生成特征": "Fingerprint image too noisy to generate features",
+    "两次采集的指纹不匹配": "The two fingerprint scans do not match",
+    "两次按压的指纹无法合并": "The two scans could not be merged",
+    "模板编号超出指纹库范围": "Template ID exceeds sensor capacity",
+    "指纹库已满": "Fingerprint storage is full",
+    "已取消录入": "Enrollment canceled",
     "请重新按压": "press again", "请再次按压同一手指": "Press the same finger again",
     "未找到匹配指纹": "No matching fingerprint", "该指纹未在界面登记，不能开门": "Fingerprint not registered in UI; door stays locked",
     "刚刚已经开过锁，请稍候": "Just unlocked, please wait", "未接入开锁服务": "Unlock service not connected",
@@ -237,11 +251,13 @@ def tr(text):  # noqa: ANN001, ANN201
     hit = EN.get(text) or EN.get(text.strip())
     if hit:
         return hit
+    text = re.sub(r"[（(]第\s*(\d+)\s*次[）)]", r" (attempt \1)", text)
     out = _phrases().sub(lambda m: f" {EN[m.group(0)].strip()} ", text)
     out = re.sub(r"(\d)\s*[条件次个帧]", r"\1", out)
     out = re.sub(r"^共\s*", "Total ", out)
     out = out.translate(_PUNCT)
     out = re.sub(r"[ ]{2,}", " ", out)
+    out = re.sub(r" *\n *", "\n", out)
     out = re.sub(r" ([)\]:,.;!?])", r"\1", out)
     out = re.sub(r"([(\[]) ", r"\1", out)
     out = out.replace(" 's", "'s")

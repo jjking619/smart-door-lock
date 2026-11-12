@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-USER_NAME="${1:-${SUDO_USER:-pi}}"
+USER_NAME="${1:-${SUDO_USER:?请指定用户名：sudo bash deploy/install_pwm_access.sh <用户名>}}"
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "需要管理员权限安装 Pin33 PWM 开机授权服务。" >&2
   exit 1
