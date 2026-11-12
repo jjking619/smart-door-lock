@@ -7,6 +7,41 @@ corruption (`bool_dealloc`) when Qt signals are exercised. Downgrading PySide6
 alone did not reliably fix interpreter shutdown (`none_dealloc`). System
 Python 3.13.5 with PySide6 6.8.3 passed repeated start/stop and shutdown tests.
 
+### Compatibility checks
+
+The following combinations were checked on the ARM64 board:
+
+| Python | PySide6 / shiboken6 | Result |
+| --- | --- | --- |
+| uv-managed 3.11.17 | 6.12.0 | A standalone `Signal(bool)` loop decreases the reference count of `True`; interpreter shutdown can abort with `bool_dealloc`. |
+| uv-managed 3.11.17 | 6.8.3 | The signal check passes, but a standalone `QImage` / `QPainter` drawing loop aborts with `none_dealloc`; the UI runtime regression also aborts. |
+| System 3.13.5 | 6.8.3 | Both standalone checks and the UI runtime regression pass. |
+
+The drawing reproduction uses only PySide6, without project code, a display,
+camera, or NPU. This points to a native binding / interpreter compatibility
+problem in the tested environment rather than application business logic.
+It does not establish that every Python 3.11 build is affected or identify the
+exact defective component. Python 3.13 uses immortal singleton objects, so a
+passing reference-count check there alone cannot prove the binding is correct;
+the successful GUI regression is also required.
+
+The project's requirements pin PySide6 to 6.8.3. An existing backend environment
+may still contain 6.12.0 if it has not been synchronized with those requirements.
+Correcting that mismatch alone did not resolve the 3.11 drawing crash in the
+isolated test. Keep the separate UI interpreter unless a replacement combination
+passes both minimal checks and the GUI runtime regression.
+
+An isolated Python 3.11.17 trial with PySide6 6.7.3 passed the signal and
+drawing checks and three UI runtime regression runs. However, the UI suite
+still had one error: its `QVideoFrame(QImage)` constructor is unavailable in
+6.7.3. On this Debian 13 image the default FFmpeg multimedia plugin also
+failed to load because it needs older FFmpeg shared libraries. Explicitly
+setting `QT_MEDIA_BACKEND=gstreamer` allowed a short local H.264 playback
+check, but does not establish full UI, multimedia, or hardware compatibility.
+Versions 6.5.3 and 6.6.3.1 were checked only with the minimal signal and
+drawing probes. These are candidates for further investigation, not verified
+replacements for the current two-environment setup.
+
 From the project root:
 
 ```sh

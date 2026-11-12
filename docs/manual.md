@@ -16,11 +16,12 @@
 
 ## 快速开始
 
-桌面系统统一入口（使用项目已有虚拟环境）：
+先按[部署流程](../README.md)安装、配置并接好设备。无硬件时可从桌面终端以模拟锁体启动：
 
 ```bash
 cd smart-door-lock  # 按实际 clone 位置调整
-.venv/bin/python main.py
+set -a; . ./deploy/systemd/doorlock.env; set +a
+LOCK_DRIVER=mock .venv/bin/python main.py
 ```
 
 默认 `--source auto`：每次打开或重连摄像头时都会扫描 `/dev/v4l/by-id/*-video-index0`，
@@ -58,8 +59,8 @@ Quectel Pi M2（RK3576）出厂内核未编译 CH340/CH341 驱动，CH340 USB-TT
 桌面启动时，`FINGERPRINT_SERIAL` 需由启动桌面的 shell/服务提供（自动发现失败时才需要）。
 开发所需依赖统一列在根目录 `requirements.txt`；安装项目时由 `pyproject.toml` 自动读取：
 `uv pip install --python .venv/bin/python -e .`。
-systemd 部署可使用 `deploy/systemd/fingerprintd.service` 与
-`deploy/systemd/doorlock.env.example`；桌面入口发现 8085 上已有 fingerprintd 时会复用它。
+systemd 部署使用安装脚本生成的 `deploy/systemd/generated/fingerprintd.service` 与
+`deploy/systemd/doorlock.env`；桌面入口发现 8085 上已有 fingerprintd 时会复用它。
 
 ### 指纹开锁（lockd）
 
@@ -100,7 +101,7 @@ SG90 使用 **50Hz**（周期 20,000,000ns），默认 0° 为 500µs、90° 为
 官方文档的 1000Hz/50% 占空比是回环测试，不能用来控制舵机。
 
 PWM sysfs 默认只有管理员可写，`bash install.sh` 已包含 PWM 授权；
-未运行完整安装时，单独执行 `sudo bash deploy/install_pwm_access.sh pi`，
+未运行完整安装时，单独执行 `sudo bash deploy/install_pwm_access.sh "$(id -un)"`，
 安装开机授权服务，只预先导出 Pin33 对应的 `pwm0` 并授权四个控制属性，
 不会输出波形，不会开放所有 PWM 或 GPIO。若受沙箱限制，需先由管理员调整沙箱策略。
 安装完成后，正常用户直接运行 `.venv/bin/python main.py` 即可（无需以管理员身份运行整个程序）；
@@ -158,7 +159,8 @@ systemd 管理的健康后端会继续复用；异常服务会提示通过服务
 `--ui-only` 只连接界面，不会替换后端。自动恢复需要允许读取本用户的 `/proc` 信息；
 无权限或内核不支持 pidfd 时会明确报错，不会退回按端口盲目杀进程。
 
-语音模式仍使用终端输入模拟门铃，暂不自动随桌面启动。SSH 启动 GUI 需要有效的
+桌面入口默认会启动音频服务（复用已有视觉后端时须另行确认音频服务）；界面可发起对讲。
+SSH 启动 GUI 需要有效的
 `DISPLAY` / `XAUTHORITY`；启动器不会修改系统显示授权。可从任意目录使用绝对入口路径：
 `<项目路径>/.venv/bin/python <项目路径>/main.py`。
 
@@ -176,8 +178,9 @@ uv pip install --python .venv/bin/python -e .
 # 1) 无硬件自测：合成画面跑通录像/缓冲/事件链路
 .venv/bin/python -m vision.selftest
 
-# 运行完整单元测试（启动器、检测器与规则）
+# 运行测试（Python 3.11 的 UI 运行时测试可能失败，见下方界面环境）
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
+QT_QPA_PLATFORM=offscreen PYTHONPATH=src .venv-ui/bin/python -m unittest discover -s tests -p 'test_ui_*.py' -v
 
 # 2) 接 USB 摄像头
 .venv/bin/python -m vision.app
@@ -200,10 +203,8 @@ src/vision/             录像 + 入侵检测 + 快递识别
 src/ui/                 桌面界面
 src/audio/              门铃对讲 + Coze 自动应答
 src/application.py      统一启动编排
-device/                 旧 python -m device.* 命令的仓库内兼容包
-tests/                  启动器、检测器与规则测试
 deploy/systemd/         systemd 服务与 env 模板
-models/                 RKNN 模型（不入库）
+models/                 RKNN 模型
 data/                   事件、快照、录像（不入库）
 requirements.txt        UI、视觉、语音与指纹服务的统一依赖清单
 ```
