@@ -1,20 +1,65 @@
-# 智能门锁
+# Smart Door Lock
 
-基于 Quectel Pi M2 智能主控板的智能门锁示例，支持摄像头预览与录像、
-人员和包裹检测、指纹开锁及 Coze 语音应答。
+English | [中文](README_zh.md)
 
-## 1. 准备
+A smart door lock demo for the [Quectel Pi M2](https://www.quectel.com.cn/quectel-pi/documentation-center) single-board computer. It supports camera preview and recording, person and parcel detection, fingerprint unlock, and Coze voice replies.
 
-- Quectel Pi M2（RK3576，ARM64）、Debian 13 桌面系统（系统 Python 3.13）、
-  网络、显示器、键鼠及 USB 摄像头；安装需要普通用户的 sudo 权限和足够磁盘空间。
-- 指纹开锁还需 AS608 指纹模块；实际开锁需 SG90 舵机及独立稳压 5V 电源；
-  语音需麦克风、扬声器和已发布的 Coze 智能体。可以先不接舵机，用模拟锁体验证。
-- 确认可访问 GitHub、软件源和 Coze；安装脚本会联网下载依赖及 RKNN Lite。
-  RKNN Lite 2.3.2 与系统 `librknnrt` 须兼容。
+![Smart door lock main screen](assets/main.png)
 
-## 2. 下载并安装
+## Features
 
-在板子的桌面终端中，以**普通用户**运行（不要对整个脚本使用 sudo）：
+- Live camera preview, snapshots, and event-triggered recording
+- Person detection (approaching, loitering) and parcel detection, with local NPU inference
+- AS608 fingerprint enrollment and recognition; an SG90 servo performs lock and unlock
+- Voice intercom answered by a Coze agent
+- Event log and Chinese/English UI; vision, audio, fingerprint, and lock run as independent services
+
+## Hardware Requirements
+
+- Quectel Pi M2 (RK3576)
+- USB camera
+- Display (HDMI or DSI touchscreen)
+- AS608 fingerprint module
+- SG90 servo and a separate regulated 5V power supply
+- Microphone and speaker (voice intercom)
+
+## Software Environment
+
+- Operating system: Debian 13 (default OS of Quectel Pi, aarch64)
+- Backend environment `.venv`: Python 3.11 (installed by uv), matching RKNN Lite 2.3.2
+- UI environment `.venv-ui`: system Python 3.13 + PySide6 6.8.3; see [docs/ui-runtime.md](docs/ui-runtime.md) for why it is separate
+- Main dependencies: aiohttp, OpenCV, NumPy, cozepy, pyserial, sounddevice, adafruit-circuitpython-fingerprint (full list in [requirements.txt](requirements.txt))
+- Voice: a Coze account and API token
+
+## UI Overview
+
+The home page has a left navigation bar, a live view in the middle, and status cards on the right:
+
+| Area | Description |
+| --- | --- |
+| Top status tags | Color tags for Fingerprint, Recording, Intrusion, Parcel, and Intercom; online status, language switch, and clock on the right |
+| Live doorstep view | USB camera preview with frame rate; supports snapshots |
+| Action buttons | Intercom, Record, Unlock |
+| Status cards | Current state of lock, fingerprint, recording, intrusion, parcel, and intercom |
+| Visitor activity | Recent events and conversations, with a view-all option |
+| Left navigation | Home, Records, Settings |
+
+Try it in four steps:
+
+1. Enroll a fingerprint in Settings, then press the finger to unlock
+2. Approach the door: person detected and recorded
+3. Put down a box: parcel detected
+4. Tap Intercom: the AI replies by voice
+
+## 1. Preparation
+
+- Quectel Pi M2 (RK3576, ARM64), Debian 13 desktop (system Python 3.13), network, display, keyboard/mouse, and a USB camera. Installation needs sudo for a normal user and enough disk space.
+- Fingerprint unlock needs an AS608 module; real unlocking needs an SG90 servo and a separate regulated 5V supply; voice needs a microphone, a speaker, and a Coze account.
+- Make sure GitHub, the package sources, and Coze are reachable; the install script downloads dependencies and RKNN Lite. RKNN Lite 2.3.2 must be compatible with the system `librknnrt`.
+
+## 2. Download and Install
+
+Run the following in a desktop terminal on the board as a **normal user** (do not run the whole script with sudo):
 
 ```bash
 git clone https://github.com/jjking619/smart-door-lock.git
@@ -22,110 +67,91 @@ cd smart-door-lock
 bash install.sh
 ```
 
-出现 `Deployment complete` 表示安装完成。脚本创建后端 Python 3.11 的 `.venv`
-和界面 Python 3.13 的 `.venv-ui`，不修改系统默认 Python；还会安装系统依赖、
-CH340/CH341 串口驱动、Pin33 PWM 开机授权服务，并将当前用户加入 `dialout`。
-这些步骤会修改系统，但不会启动门锁或输出舵机波形。**安装后注销并重新登录**，
-使串口组权限生效；重新打开终端后进入克隆的项目目录，以下命令均从项目根目录执行。
+`Deployment complete` means the installation finished. The script creates the backend `.venv` (Python 3.11) and the UI `.venv-ui` (Python 3.13) without changing the system default Python. It also installs system packages, the CH340/CH341 serial driver, and the Pin33 PWM boot-time permission service, and adds the current user to `dialout`. These steps modify the system but do not start the lock or output servo signals. **Log out and back in after installation** so the serial group permission takes effect; then reopen a terminal and enter the cloned project directory. All commands below run from the project root.
 
-如需 GPIO 继电器权限，使用 `bash install.sh --gpio`；默认不开放 GPIO。
-如果驱动缺失且内核头文件不匹配，按报错安装与当前内核匹配的头文件，或设置
-`KERNEL_HEADERS` 后重新运行；内核升级后可运行 `bash deploy/install_ch341_driver.sh`。
+If the driver is missing and the kernel headers do not match, install headers matching the running kernel as the error suggests, or set `KERNEL_HEADERS` and re-run. After a kernel upgrade, run `bash deploy/install_ch341_driver.sh`.
 
-仓库包含 RK3576 人员模型 `models/yolov5s-rk3576.rknn` 和包裹模型
-`models/parcel-yolov5n-rk3576-fp.rknn`。人员模型缺失时安装脚本尝试从系统镜像
-复制，不覆盖已有文件；两个模型都应按下文检查。
+The repository includes the RK3576 person model `models/yolov5s-rk3576.rknn` and the parcel model `models/parcel-yolov5n-rk3576-fp.rknn`. If the person model is missing, the install script tries to copy it from the system image without overwriting existing files.
 
-## 3. 配置
+## 3. Configuration
 
-安装时会从 [`doorlock.env.example`](deploy/systemd/doorlock.env.example)
-创建 `deploy/systemd/doorlock.env`，已有文件不会被覆盖。编辑该文件：
+Installation creates `deploy/systemd/doorlock.env` from [`doorlock.env.example`](deploy/systemd/doorlock.env.example); an existing file is never overwritten. Edit it:
 
 ```bash
 nano deploy/systemd/doorlock.env
 ```
 
-- 首次验证将 `LOCK_DRIVER` 改为 `mock`，避免实际驱动锁体。
-- 语音需要填写 `COZE_API_TOKEN` 和已发布智能体的 `COZE_BOT_ID`，保持
-  `COZE_MODE=streaming`；按需填写 `COZE_VOICE_ID`。留空音频设备号时使用系统默认设备，
-  可用 `.venv/bin/python -m sounddevice` 查看设备。没有配置语音时可先用 `--no-audio`。
-- 默认 `VISION_SOURCE=auto` 自动发现摄像头；多个摄像头时可改为实际的
-  `/dev/v4l/by-id/...-video-index0` 路径。指纹串口自动扫描，未找到时将
-  `FINGERPRINT_SERIAL` 设为实际串口路径。
-- 按摄像头实际画面调整 `VISION_DOORSTEP_POLY`、`VISION_GROUND_POLY`。
-  两项数据目录默认均为相对项目目录的 `data`；从其他设备复制配置时检查绝对路径。
-- `VISION_TOKEN` 默认留空，而视觉服务可从网络访问；需要远程访问时设置令牌并限制网络
-  访问。HTTP 未加密，不应直接暴露到公网。
+- The default is `LOCK_DRIVER=servo`; starting lockd immediately moves the servo to the locked angle. Wire the servo as in section 4 before the first start, and confirm the locked angle is safe with no mechanical load attached.
+- For voice, only fill in `COZE_API_TOKEN` obtained from Coze and keep `COZE_MODE=streaming`. The project creates or updates and publishes the agent automatically, then writes `COZE_BOT_ID` back to the config. `COZE_VOICE_ID` may stay empty; empty audio device IDs use the system default. List audio devices with `.venv/bin/python -m sounddevice`. Without voice configuration, start with `--no-audio`.
+- The default `VISION_SOURCE=auto` discovers the camera automatically; with several cameras, set the actual `/dev/v4l/by-id/...-video-index0` path. The fingerprint serial port is scanned automatically; if not found, set `FINGERPRINT_SERIAL` to the real port.
+- Adjust `VISION_DOORSTEP_POLY` and `VISION_GROUND_POLY` to your camera view. Both data directories default to `data` relative to the project; check for absolute paths when copying a config from another device.
+- `VISION_TOKEN` is empty by default while the vision service is reachable over the network; for remote access, set a token and restrict network access.
 
-配置含密钥，不要提交或分享；确保权限为 `chmod 600 deploy/systemd/doorlock.env`。
-桌面入口**不会自动加载**该文件，下面的启动命令会显式加载。只加载自己信任、符合
-systemd EnvironmentFile 和 shell 语法的配置，不要在配置中使用 shell 命令替换。
+The config contains secrets: do not commit or share it, and keep `chmod 600 deploy/systemd/doorlock.env`. After filling in the token, run the automatic setup once from the project root (the Coze account must already have a workspace):
 
-## 4. 接线与首次启动
+```bash
+set -a
+. ./deploy/systemd/doorlock.env
+set +a
+.venv/bin/python -m audio.coze_setup --write-env deploy/systemd/doorlock.env
+```
 
-连接摄像头、显示器和所需音频设备。AS608 的串口 TX/RX 使用 3.3V TTL 电平并交叉连接，
-确保模块供电符合其规格并与主控共地；USB 转串口设备需要 `dialout` 权限。
-SG90 暂不连接机械负载。详细接线及调试参见[使用说明](docs/manual.md)。
+The script looks for an agent with the default name "门锁访客助手" and creates it if absent, then publishes it to the API channel, verifies the publish status, and writes `COZE_BOT_ID`. Re-running reuses the same agent. If you do not need Coze or cannot reach it, skip this step and start with `--no-audio`.
 
-在桌面终端中运行：
+## 4. Wiring and First Start
+
+Connect the camera, display, and any audio devices. The AS608 TX/RX use 3.3V TTL levels and must be crossed; make sure the module power meets its specification and shares ground with the board. USB-to-serial devices need `dialout` permission. Connect the SG90 signal wire to **physical Pin33** of the M2, powered by a separate regulated 5V supply sharing ground with the M2. Do not attach the servo horn or the door's mechanical load before the first start; startup immediately drives the servo to the locked angle (default 0°), so first confirm it will not hit a limit or cause damage.
+
+In a desktop terminal:
 
 ```bash
 ls -lh models/yolov5s-rk3576.rknn models/parcel-yolov5n-rk3576-fp.rknn
 set -a
 . ./deploy/systemd/doorlock.env
 set +a
-LOCK_DRIVER=mock .venv/bin/python main.py
+.venv/bin/python main.py
 ```
 
-启动器会启动视觉、音频、指纹和锁体服务及桌面界面；若没有语音配置，在最后一行
-追加 `--no-audio`。关闭界面会停止由本次启动器创建的服务。已独立运行的服务可能被复用，
-切换 `LOCK_DRIVER` 前先停止旧的 lockd；不要同时用不同方式启动同一服务。
-终端退出或重新登录后需重新加载配置。
+The launcher starts the vision, audio, fingerprint, and real servo lock services and the desktop UI; without voice configuration, append `--no-audio` to the last line. Confirm the servo moves to a safe locked angle, then test real unlock and re-lock in the UI. Closing the UI stops the services created by this launch. Services already running independently may be reused; do not start the same service in different ways at once. After the terminal exits or you log in again, load the config again.
 
-如果没有包裹模型，可先使用人员模型运行，但包裹识别能力不同。加载配置后执行：
+## 5. Verification
 
-```bash
-VISION_PACKAGE_MODEL="" VISION_PACKAGE_CLASSES="suitcase,backpack,handbag" \
-  LOCK_DRIVER=mock .venv/bin/python main.py
-```
-
-上述类别覆盖是必要的：配置模板中的默认类别对应专用包裹模型。
-
-## 5. 验证
-
-保持界面打开，在另一个终端检查：
+With the UI open, check from another terminal:
 
 ```bash
 curl -fsS http://127.0.0.1:8083/health
-curl -fsS http://127.0.0.1:8084/health  # 使用 --no-audio 时不运行
+curl -fsS http://127.0.0.1:8084/health  # not running with --no-audio
 curl -fsS http://127.0.0.1:8085/health
 curl -fsS http://127.0.0.1:8086/health
 ```
 
-- 视觉健康信息应显示 `detector: "rknn"`；双模型模式下
-  `package_detector` 也应为 `"rknn"`，且对应错误字段为空。界面预览应能看到画面；
-  默认没有界面、预览或录像时视觉服务会暂停并释放相机，这是正常现象。
-- 锁体健康信息中 `driver` 对象的 `driver` 字段应为 `mock`；在界面测试开锁只验证模拟链路，不会开门。
-- 指纹服务的健康信息可用于检查模块连接；通过界面录入并识别指纹，检查记录页。
-- 语音服务检查 `talk_available` / `talk_error`，再在界面发起对讲，实际验证
-  麦克风、Coze 应答和扬声器。健康接口成功不代表云端额度或整个语音链路可用。
-- 观察人员和包裹事件、录像与 `data/` 中的记录；检测精度和区域需现场调试。
+- Vision health should show `detector: "rknn"`; in dual-model mode `package_detector` should also be `"rknn"`, with empty error fields. The UI preview should show video. By default the vision service pauses and releases the camera when there is no UI, preview, or recording; this is normal.
+- In lock health, the `driver` field of the `driver` object should be `servo` and `error` should be empty. Once angles are confirmed safe, attach the mechanical load and repeat the test.
+- Fingerprint health can be used to check the module connection. Enroll a fingerprint before unlocking (see below).
+- For voice, check `talk_available` / `talk_error`, then start an intercom in the UI to verify the microphone, Coze reply, and speaker. A successful health check does not prove cloud quota or the whole voice chain works.
+- Watch person and parcel events, recordings, and records under `data/`; detection accuracy and regions need on-site tuning.
 
-## 6. 使用实际舵机
+### Enroll a Fingerprint
 
-先停止模拟运行，再接线并在无机械负载时校准：SG90 信号线接 M2 **物理 Pin33**，
-地线接 GND，电源线接独立稳压 5V 电源，电源与 M2 共地；不要用 GPIO/3.3V 给舵机供电。
-按实际结构调整 `LOCK_SERVO_LOCKED_ANGLE` 和 `LOCK_SERVO_UNLOCKED_ANGLE`，
-确认不会顶住限位或堵转。将 `LOCK_DRIVER` 改为 `servo`，重新加载配置后按第 4 节启动，
-检查锁体健康信息及实际开锁、回锁。调试步骤见[舵机说明](docs/manual.md#sg90-舵机开锁物理-pin33)。
+A fingerprint must be enrolled before it can unlock; unregistered templates do not open the door:
 
-SG90 没有位置反馈，断电或进程崩溃时软件无法保证回锁，须保留机械应急开门方式；
-不要仅依赖软件保障人身安全。
+1. Open "Settings" in the left navigation and select the fingerprint management tab (make sure the fingerprint service is online).
+2. Enter a name (e.g. "Zhang San") and a note (e.g. "right index finger") on the right, then click "Add fingerprint".
+3. Follow the prompts: press the same finger on the AS608 twice in the same position, lifting it when prompted.
+4. After "enrolled" is shown, a new ID appears in the list; press that finger on the sensor and the home page should show an unlock.
+5. On the same tab you can rename, save notes, or delete (deletion needs confirmation and cannot be undone); unlock events appear on the Records page.
 
-## 7. 可选：systemd 后台服务
+If the two presses repeatedly fail to merge, enroll again with the same finger in the same position. Enrollment only registers identity and does not unlock by itself. Templates are stored in the AS608 module; `data/fingerprint/users.json` only stores IDs and names.
 
-安装脚本只生成服务文件，不会自动安装或启动它们。先退出桌面启动器及同端口的旧服务，
-并在配置中确认 `LOCK_DRIVER=mock` 或已经安全校准的 `servo`。从项目根目录执行：
+## 6. Using the Real Servo
+
+Wire it and calibrate with no mechanical load before the first start: SG90 signal to **physical Pin33** of the M2, ground to GND, power to a separate regulated 5V supply sharing ground with the M2; never power the servo from GPIO/3.3V. Adjust `LOCK_SERVO_LOCKED_ANGLE` and `LOCK_SERVO_UNLOCKED_ANGLE` to your mechanism so it does not hit a limit or stall. The template default is `LOCK_DRIVER=servo`, so no driver switch is needed; start as in section 4 and check lock health and real unlock/re-lock.
+
+The SG90 has no position feedback, so software cannot guarantee re-locking after power loss or a crash. Keep a mechanical emergency way to open the door, and do not rely on software alone for personal safety.
+
+## 7. Optional: systemd Background Services
+
+The install script only generates service files; it does not install or start them. First exit the desktop launcher and any old services on the same ports, confirm `LOCK_DRIVER=servo`, and make sure the servo is calibrated without load with a safe locked angle. Enabling lockd immediately drives the servo to the locked angle. From the project root:
 
 ```bash
 mkdir -p data
@@ -136,18 +162,51 @@ sudo systemctl enable --now visiond audiood lockd fingerprintd
 sudo systemctl status visiond audiood lockd fingerprintd
 ```
 
-只需部分功能时可只启用所需服务。服务读取同一个 `doorlock.env`；
-修改后需重启受影响的服务，例如 `sudo systemctl restart audiood`。
-查看日志：`sudo journalctl -u visiond -u audiood -u lockd -u fingerprintd -n 100 --no-pager`。
-启动后台服务后，桌面终端可加载同一配置，再运行 `.venv/bin/python main.py --ui-only`；
-界面关闭不会停止 systemd 服务。移动项目目录或更换运行用户后重新生成并安装服务文件，
-避免与用户级同名服务同时启用。详见[部署说明](docs/architecture.md#7-部署)。
+Enable only the services you need. They read the same `doorlock.env`; after editing it, restart the affected services, e.g. `sudo systemctl restart audiood`. View logs with `sudo journalctl -u visiond -u audiood -u lockd -u fingerprintd -n 100 --no-pager`. With the background services running, load the same config in a desktop terminal and run `.venv/bin/python main.py --ui-only`; closing the UI does not stop the systemd services. After moving the project directory or changing the run user, regenerate and reinstall the service files, and avoid enabling same-named user-level services at the same time.
 
-## 注意事项
+## Project Structure
 
-- 如需无界面时持续检测，将 `VISION_PAUSE_WITHOUT_UI=0`，并重启视觉服务。
-- 指纹管理无需 PIN；录像和事件保存在 `data/`，请注意访问权限、磁盘空间和备份。
-- 本 README 的安装成功不代表真实硬件、网络、模型精度或 Coze 配额已验证。
+```
+smart-door-lock/
+├── assets/                 # README screenshots
+├── deploy/                 # Deployment scripts, systemd and config templates
+│   └── systemd/            # doorlock.env.example, *.service templates
+├── docs/                   # Manual, architecture, design, UI runtime notes
+├── models/                 # RKNN models and LICENSE
+├── src/
+│   ├── application.py      # Unified launcher (called by main.py)
+│   ├── vision/             # Vision service (camera, detection, recording)
+│   ├── audio/              # Voice service and Coze setup
+│   ├── fingerprint/        # Fingerprint service (AS608)
+│   ├── lock/               # Lock service and drivers (servo/gpio/mcu/mock)
+│   └── ui/                 # PySide6 desktop UI
+├── tests/                  # Tests
+├── install.sh              # One-step install script
+├── main.py                 # Entry point
+├── pyproject.toml
+├── requirements.txt
+└── LICENSE
+```
 
-更多内容：[视觉服务](src/vision/README.md) · [语音服务](src/audio/README.md) ·
-[界面运行环境](docs/ui-runtime.md) · [设计方案](docs/design.md)
+## Model Overview
+
+The vision service runs two RKNN models in parallel, on NPU Core0 and Core1 of the RK3576:
+
+- **Person model** `yolov5s-rk3576.rknn`: YOLOv5s (COCO); only person detections are kept.
+- **Parcel model** `parcel-yolov5n-rk3576-fp.rknn`: a dedicated YOLOv5n with classes `defect-parcel` and `good-parcel`, from the public [parcel detection weights](https://github.com/Y47ya/parcels-object-detection-and-classification-Yolov5), converted to an unquantized RKNN.
+
+Models cannot be swapped by only renaming files; see [src/vision/README.md](src/vision/README.md). Models are used under their own upstream licenses; see [models/LICENSE](models/LICENSE).
+
+## License
+
+The project code is released under the [Apache License 2.0](LICENSE).
+
+## Reporting Issues
+
+If you run into problems, please submit technical inquiries on the [Quectel Official Forum](https://forumschinese.quectel.com/c/quectel-pi/58). Issues and Pull Requests are welcome.
+
+## Notes
+
+- To keep detecting without a UI, set `VISION_PAUSE_WITHOUT_UI=0` and restart the vision service.
+- Fingerprint management needs no PIN; recordings and events are stored in `data/`, so mind access permissions, disk space, and backups.
+- A successful installation per this README does not mean real hardware, network, model accuracy, or Coze quota has been verified.
